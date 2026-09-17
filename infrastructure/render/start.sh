@@ -30,6 +30,27 @@ if [ -z "${REDIS_URL:-}" ]; then
   echo "[start] redis ready inside the container"
 fi
 
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "[start] DATABASE_URL is not set. In Render, open the tasker service > Environment,"
+  echo "[start] add DATABASE_URL with your Neon connection string, and deploy again."
+  exit 1
+fi
+
+# Whatever Neon string was pasted, use a form that works for Prisma:
+#   - the direct address, not the pooled one ("-pooler" in the host): Prisma
+#     migrations cannot run through the pooler
+#   - no channel_binding, which Prisma 5's TLS client can fail to negotiate;
+#     the connection still requires TLS through sslmode
+#   - a 15-second connect timeout, so a database waking from sleep has time
+DATABASE_URL=$(printf '%s' "$DATABASE_URL" \
+  | sed -e 's/-pooler\././' -e 's/channel_binding=[^&]*&\{0,1\}//' -e 's/[?&]$//')
+case "$DATABASE_URL" in
+  *connect_timeout=*) ;;
+  *\?*) DATABASE_URL="${DATABASE_URL}&connect_timeout=15" ;;
+  *) DATABASE_URL="${DATABASE_URL}?connect_timeout=15" ;;
+esac
+export DATABASE_URL
+
 cd /app/apps/api
 echo "[start] applying database migrations"
 node_modules/.bin/prisma migrate deploy
