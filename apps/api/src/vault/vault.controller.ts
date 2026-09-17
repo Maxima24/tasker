@@ -48,6 +48,22 @@ export class VaultController {
     return this.vault.summary();
   }
 
+  /** The People tab: every assignment across every account. */
+  @Get('people')
+  @RequireRoles('ADMIN', 'SUB_ADMIN')
+  people(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('active') active?: string,
+    @Query('q') q?: string,
+  ) {
+    return this.vault.people(
+      parsePage(page, limit),
+      active === 'yes' || active === 'no' ? active : undefined,
+      q,
+    );
+  }
+
   @Get(':id')
   @RequireRoles('ADMIN', 'SUB_ADMIN')
   get(@Param('id') id: string) {

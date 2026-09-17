@@ -10,6 +10,7 @@ import { keys } from "@/lib/query-keys";
 import { StateBadge, type TaskState } from "@/components/state-badge";
 import { CapacityMeter } from "@/components/capacity-meter";
 import { formatWAT, relative } from "@/lib/utils";
+import { formatDayWAT } from "@/lib/utils";
 import { Pagination, usePage } from "@/components/pagination";
 
 interface Evidence {
@@ -64,11 +65,20 @@ export default function TaskerAuditPage() {
   if (isLoading) return <div className="h-64 animate-pulse rounded-lg bg-ink-100" />;
   if (!data) return null;
 
-  const { tasker, totals, capacity, submissions } = data as {
+  const { tasker, totals, capacity, submissions, accounts } = data as {
     tasker: any;
     totals: any;
     capacity: any;
     submissions: Submission[];
+    accounts: {
+      assignmentId: string;
+      ref: string;
+      label: string | null;
+      role: string;
+      active: boolean;
+      assignedAt: string;
+      collectedAt: string | null;
+    }[];
   };
 
   return (
@@ -101,6 +111,46 @@ export default function TaskerAuditPage() {
       </div>
 
       <CapacityMeter capacity={capacity} />
+
+      <section>
+        <h2 className="mb-3 text-sm font-semibold text-ink-900">Accounts</h2>
+        {!accounts?.length ? (
+          <p className="rounded-lg border border-dashed border-ink-200 px-4 py-4 text-sm text-ink-500">
+            No account has been assigned to {tasker.name.split(" ")[0]} yet. Assign one from Accounts.
+          </p>
+        ) : (
+          <div className="overflow-x-auto rounded-lg border border-ink-200">
+            <table className="w-full min-w-[36rem] text-left text-sm">
+              <thead className="border-b border-ink-200 bg-ink-50 text-xs text-ink-500">
+                <tr>
+                  <th className="px-4 py-2 font-medium">Account ID</th>
+                  <th className="px-4 py-2 font-medium">Account Name</th>
+                  <th className="px-4 py-2 font-medium">Role</th>
+                  <th className="px-4 py-2 font-medium">Currently Active?</th>
+                  <th className="px-4 py-2 font-medium">Date Assigned</th>
+                  <th className="px-4 py-2 font-medium">Collected</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-ink-100">
+                {accounts.map((a) => (
+                  <tr key={a.assignmentId}>
+                    <td className="code px-4 py-2 font-medium text-ink-900">{a.ref}</td>
+                    <td className="px-4 py-2 text-ink-700">{a.label ?? "-"}</td>
+                    <td className="px-4 py-2 text-ink-700">{a.role}</td>
+                    <td className="px-4 py-2">{a.active ? "Yes" : "No"}</td>
+                    <td className="whitespace-nowrap px-4 py-2 tabular-nums text-ink-700">
+                      {formatDayWAT(a.assignedAt)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-2 text-ink-500">
+                      {a.collectedAt ? formatDayWAT(a.collectedAt) : "-"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <section>
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-[0.08em] text-ink-700">

@@ -34,6 +34,13 @@ export class TaskersController {
     return this.taskers.submissions(id, parsePage(page, limit));
   }
 
+  /** The accounts a tasker has been given, with the date each was assigned. */
+  @Get('me/accounts')
+  @RequireRoles('TASKER')
+  myAccounts(@CurrentUser() user: AuthUser) {
+    return this.taskers.myAccounts(user.id);
+  }
+
   /** A tasker keeping their own contact details current. */
   @Post('me/profile')
   @RequireRoles('TASKER')
