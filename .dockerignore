@@ -1,4 +1,4 @@
-# Keeps secrets, local state and other apps out of the API image.
+# Keeps secrets and local state out of the image.
 .git
 .github
 docs
@@ -16,7 +16,3 @@ docs
 # Environment files carry real keys. The image gets its settings from Render.
 **/.env
 **/.env.*
-
-# The API image needs only the web app's manifest, for the shared lockfile.
-apps/web/*
-!apps/web/package.json

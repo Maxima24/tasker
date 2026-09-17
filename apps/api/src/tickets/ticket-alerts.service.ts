@@ -22,6 +22,14 @@ const MAX_REMINDERS = 6;
 export class TicketAlertsService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger(TicketAlertsService.name);
   private timer?: NodeJS.Timeout;
+  /**
+   * Whether an unclaimed ticket might still need a reminder. While false the
+   * sweep does not touch the database at all. The database sleeps when idle
+   * and bills for every minute it is awake, and a query every minute would
+   * keep it awake around the clock for tickets that do not exist.
+   * Starts true so the first sweep after a restart finds any left open.
+   */
+  private mayNeedReminders = true;
 
   constructor(
     private readonly db: PrismaService,
@@ -77,6 +85,7 @@ export class TicketAlertsService implements OnModuleInit, OnModuleDestroy {
 
   /** Fired the moment a ticket is raised. */
   async announce(ticketId: string) {
+    this.mayNeedReminders = true;
     const ticket = await this.load(ticketId);
     if (!ticket) return;
 
@@ -121,6 +130,16 @@ export class TicketAlertsService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async sweep() {
+    if (!this.mayNeedReminders) return;
+
+    const pending = await this.db.ticket.count({
+      where: { status: 'OPEN', alertCount: { lt: MAX_REMINDERS } },
+    });
+    if (pending === 0) {
+      this.mayNeedReminders = false;
+      return;
+    }
+
     const cutoff = new Date(Date.now() - REMIND_AFTER_MS);
     const stale = await this.db.ticket.findMany({
       where: {

@@ -79,25 +79,29 @@ stranger it is worth probing.
 
 ---
 
-## Deploy on Render
+## Deploy on Render (free)
 
-`render.yaml` describes everything, and the API image runs the Telegram bot
-beside the API.
+Everything runs on free plans, so Render asks for no payment details.
 
-| Service | Plan | Why |
+| Where | What | Plan |
 |---|---|---|
-| `tasker-api` (API + bot) | `0.5c-512mb`, paid | Must never sleep: ticket reminders, push alerts and the bot live here |
-| `tasker-db` (Postgres 16) | `0.1c-256mb`, paid | Render deletes free databases after 30 days |
-| `tasker-web` (tasker app + console) | free | Kept awake by `.github/workflows/keep-alive.yml` |
-| `tasker-redis` (Key Value) | free | Alerts and bot menus only; losing it on a restart is harmless |
+| Render web service `tasker` | The tasker app and console, the API behind them, and the Telegram bot, in one container | free |
+| Render Key Value `tasker-redis` | Alerts and bot menus; losing it on a restart is harmless | free |
+| Neon | Postgres | free |
+| Cloudflare R2 | Videos and proof screenshots | free tier |
 
-1. **Put the project on GitHub**, as a private repository. `.env` files are
-   excluded by `.gitignore` and `.dockerignore`.
-2. **In Render, choose New > Blueprint** and pick the repository. It reads
-   `render.yaml` and creates the four services in Frankfurt.
+Why this shape: Render gives a workspace **750 free hours a month**, enough for
+exactly one service kept awake all month, so the web app, API and bot share one.
+The database is on Neon because Render deletes free databases after 30 days;
+Neon's free plan does not expire.
+
+1. **Create the database.** Sign up at neon.com, create a project in
+   *AWS Europe Central 1 (Frankfurt)*, and copy its connection string (it starts
+   `postgresql://` and ends `?sslmode=require`).
+2. **Open** `https://render.com/deploy?repo=https://github.com/Maxima24/tasker`.
+   Render reads `render.yaml` and creates the two services.
 3. **Fill in what it asks for:**
-   - `WEB_ORIGIN`: the web service's address, e.g. `https://tasker-web.onrender.com`.
-     If Render gives it a different name, correct this after the first deploy.
+   - `DATABASE_URL`: the Neon connection string.
    - `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_NAME`, `BOOTSTRAP_ADMIN_PASSWORD`
      (10+ characters): the first admin, created while no admin exists. They must
      choose their own password on first sign-in.
@@ -107,28 +111,31 @@ beside the API.
      proof screenshots. Without R2, uploads are refused, because Render wipes a
      service's disk on every deploy.
    - `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`: run `npx web-push generate-vapid-keys`.
-4. **Copy `VAULT_KEY_SECRET` somewhere safe** (tasker-api > Environment). It
-   encrypts every stored account password; lose or change it and they are
-   unreadable.
-5. **Sign in** at the web address as the bootstrap admin, choose a password,
-   link Telegram from the header, and turn on Alerts.
-6. **Keep the web app awake:** in the GitHub repository, under Settings > Secrets
-   and variables > Actions > Variables, add `TASKER_WEB_URL` (and `TASKER_API_URL`),
-   then run **Keep Render awake** once from the Actions tab.
+4. **Copy `VAULT_KEY_SECRET` somewhere safe** (tasker > Environment). It encrypts
+   every stored account password; lose or change it and they are unreadable.
+5. **Sign in** at the service's address as the bootstrap admin, choose a
+   password, link Telegram from the header, and turn on Alerts.
+6. **Keep it awake:** in the GitHub repository, under Settings > Secrets and
+   variables > Actions > Variables, add `TASKER_WEB_URL` with the service's
+   address, then run **Keep Render awake** once from the Actions tab.
 
-Every API start applies pending migrations first; a failing migration stops the
+Every start applies pending migrations first; a failing migration stops the
 deploy and the previous version keeps serving. The API refuses to start in
 production with a missing or development secret, and the demo seed refuses to
 run against production.
 
-The web app reads the API's private address at build time. If the API service
-is ever recreated or renamed, redeploy the web service too.
+What free costs you:
 
-Keep-alive has limits: Render gives a workspace 750 free hours a month, enough
-for one free service awake all month, and on a private repository every run
-counts against GitHub's 2,000 free Actions minutes.
-
----
+- **Speed.** A free instance has a fraction of a CPU. Pages and uploads are
+  slower than on a paid plan, and the first deploy takes several minutes.
+- **Neon's limits.** 0.5 GB of storage and 100 compute hours a month. The
+  database sleeps after 5 idle minutes and wakes on the next request; health
+  checks and the reminder loop deliberately leave it asleep.
+- **Bandwidth.** Videos stream through the service, and that counts against
+  Render's free monthly bandwidth. With no payment details on file, running out
+  suspends the service until the next month.
+- **Occasional sleep.** GitHub can start scheduled runs late, so the service may
+  sometimes sleep and take about a minute to wake.
 
 ## How the tasker flow works
 
