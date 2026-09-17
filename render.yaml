@@ -1,12 +1,11 @@
 # Tasker on Render's free tier. No payment details needed.
 #
 #   tasker        ONE free web service running the tasker app and console, the
-#                 API behind them, and the Telegram bot. One service because
-#                 Render gives a workspace 750 free hours a month: enough for
-#                 exactly one service awake all month. Kept awake by
-#                 .github/workflows/keep-alive.yml.
-#   tasker-redis  Free Key Value, for alerts and bot menus. Losing its contents
-#                 on a restart is harmless.
+#                 API behind them, the Telegram bot, and a small in-memory Redis
+#                 they share. One service because Render gives a workspace 750
+#                 free hours a month (enough for exactly one service awake all
+#                 month) and allows only one free Key Value instance. Kept awake
+#                 by .github/workflows/keep-alive.yml.
 #
 # The database is NOT on Render: Render deletes free databases after 30 days.
 # Create a free Postgres on neon.com (region: AWS Europe Central, Frankfurt)
@@ -15,13 +14,6 @@
 # Settings marked `sync: false` are asked for when the Blueprint is created.
 
 services:
-  - type: keyvalue
-    name: tasker-redis
-    region: frankfurt
-    plan: free
-    maxmemoryPolicy: noeviction
-    ipAllowList: []
-
   - type: web
     name: tasker
     runtime: docker
@@ -38,11 +30,6 @@ services:
       # postgresql:// and ending ?sslmode=require
       - key: DATABASE_URL
         sync: false
-      - key: REDIS_URL
-        fromService:
-          type: keyvalue
-          name: tasker-redis
-          property: connectionString
 
       # Generated once by Render. VAULT_KEY_SECRET encrypts every stored account
       # password: copy it somewhere safe, and never change or delete it.

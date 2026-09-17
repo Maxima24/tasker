@@ -1,5 +1,5 @@
-# The whole of Tasker in one container: the web app, the API behind it, and the
-# Telegram bot.
+# The whole of Tasker in one container: the web app, the API behind it, the
+# Telegram bot, and a small Redis they share.
 #
 # One service, because Render's free tier gives a workspace 750 instance hours
 # a month - enough for exactly one service kept awake all month. Built from the
@@ -40,6 +40,13 @@ RUN apt-get update \
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
+
+# Redis carries alerts from the API to the bot, bot menus and login-attempt
+# counts - all short-lived, all inside this container. Running it here avoids a
+# separate Key Value service; Render allows one free one per workspace.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends redis-server \
+ && rm -rf /var/lib/apt/lists/*
 
 COPY apps/bot/requirements.txt apps/bot/requirements.txt
 RUN python3 -m venv /opt/bot \

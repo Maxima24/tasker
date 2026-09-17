@@ -85,13 +85,13 @@ Everything runs on free plans, so Render asks for no payment details.
 
 | Where | What | Plan |
 |---|---|---|
-| Render web service `tasker` | The tasker app and console, the API behind them, and the Telegram bot, in one container | free |
-| Render Key Value `tasker-redis` | Alerts and bot menus; losing it on a restart is harmless | free |
+| Render web service `tasker` | The tasker app and console, the API behind them, the Telegram bot, and an in-memory Redis for alerts and bot menus, in one container | free |
 | Neon | Postgres | free |
 | Cloudflare R2 | Videos and proof screenshots | free tier |
 
 Why this shape: Render gives a workspace **750 free hours a month**, enough for
-exactly one service kept awake all month, so the web app, API and bot share one.
+exactly one service kept awake all month, and allows one free Key Value
+instance, so the web app, API, bot and Redis share one container.
 The database is on Neon because Render deletes free databases after 30 days;
 Neon's free plan does not expire.
 
@@ -99,7 +99,7 @@ Neon's free plan does not expire.
    *AWS Europe Central 1 (Frankfurt)*, and copy its connection string (it starts
    `postgresql://` and ends `?sslmode=require`).
 2. **Open** `https://render.com/deploy?repo=https://github.com/Maxima24/tasker`.
-   Render reads `render.yaml` and creates the two services.
+   Render reads `render.yaml` and creates the service.
 3. **Fill in what it asks for:**
    - `DATABASE_URL`: the Neon connection string.
    - `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_NAME`, `BOOTSTRAP_ADMIN_PASSWORD`
