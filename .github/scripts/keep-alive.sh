@@ -18,8 +18,10 @@ BOT_URL="${TASKER_BOT_URL:-}"; BOT_URL="${BOT_URL%/}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 if [[ -z "$WEB_URL$API_URL$BOT_URL" ]]; then
-  echo "::error::No service URLs set. Add TASKER_WEB_URL (and TASKER_API_URL) under Settings > Secrets and variables > Actions > Variables."
-  exit 1
+  # Not deployed yet: nothing to ping, and failing here would email the owner
+  # every ten minutes about a site that does not exist.
+  echo "::notice::No service URLs set yet. Add TASKER_WEB_URL (and TASKER_API_URL) under Settings > Secrets and variables > Actions > Variables."
+  exit 0
 fi
 
 failed=0
