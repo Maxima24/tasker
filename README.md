@@ -102,6 +102,11 @@ Neon's free plan does not expire.
    Render reads `render.yaml` and creates the service.
 3. **Fill in what it asks for:**
    - `DATABASE_URL`: the Neon connection string.
+   - `REDIS_URL` (optional): a hosted Redis such as Upstash, region
+     `eu-central-1`, as its `rediss://` address. Left empty, the service runs its
+     own in-memory Redis. The health check reuses its Redis result for a minute,
+     so Render's frequent checks stay well inside Upstash's free 500,000
+     commands a month.
    - `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_NAME`, `BOOTSTRAP_ADMIN_PASSWORD`
      (10+ characters): the first admin, created while no admin exists. They must
      choose their own password on first sign-in.

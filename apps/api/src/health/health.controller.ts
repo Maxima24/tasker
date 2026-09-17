@@ -25,17 +25,33 @@ export class HealthController implements OnModuleDestroy {
     maxRetriesPerRequest: 1,
   });
 
+  /**
+   * Render calls this every few seconds. A hosted Redis bills per command (the
+   * free Upstash plan allows 500,000 a month), and a ping on every call would
+   * spend that on health checks alone, so a good answer is reused for a minute.
+   */
+  private redisCheckedAt = 0;
+  private redisState: 'ok' | 'down' = 'down';
+
   constructor(private readonly db: PrismaService) {}
+
+  private async redisHealth(): Promise<'ok' | 'down'> {
+    const reuseFor = this.redisState === 'ok' ? 60_000 : 10_000;
+    if (Date.now() - this.redisCheckedAt < reuseFor) return this.redisState;
+    this.redisState = await this.check(async () => {
+      if (this.redis.status === 'wait' || this.redis.status === 'end') await this.redis.connect();
+      await this.redis.ping();
+    });
+    this.redisCheckedAt = Date.now();
+    return this.redisState;
+  }
 
   @Public()
   @Get('health')
   async health(@Query('deep') deep: string | undefined, @Res() res: Response) {
     const [db, redis] = await Promise.all([
       deep ? this.check(() => this.db.$queryRaw`SELECT 1`) : Promise.resolve('skipped' as const),
-      this.check(async () => {
-        if (this.redis.status === 'wait' || this.redis.status === 'end') await this.redis.connect();
-        await this.redis.ping();
-      }),
+      this.redisHealth(),
     ]);
     const ok = db !== 'down' && redis === 'ok';
 

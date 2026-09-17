@@ -31,6 +31,11 @@ services:
       - key: DATABASE_URL
         sync: false
 
+      # Optional. A hosted Redis, e.g. Upstash (region eu-central-1): the
+      # rediss:// address. Leave empty to use the one built into the container.
+      - key: REDIS_URL
+        sync: false
+
       # Generated once by Render. VAULT_KEY_SECRET encrypts every stored account
       # password: copy it somewhere safe, and never change or delete it.
       - key: JWT_SECRET
