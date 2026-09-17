@@ -428,7 +428,7 @@ export class TasksService {
 
     await this.assertHasCapacity(user.id, taskId);
 
-    const account = await this.pickAccount();
+    const account = await this.pickAccount(user.id);
 
     return this.db.$transaction(async (tx) => {
       const updated = await this.transition(
@@ -454,20 +454,47 @@ export class TasksService {
     });
   }
 
-  /** An account with no open hold, not cooling down, healthy. */
-  private async pickAccount() {
-    const account = await this.db.account.findFirst({
-      where: {
-        state: 'HEALTHY',
-        OR: [{ cooldownUntil: null }, { cooldownUntil: { lt: new Date() } }],
-        holds: { none: { releasedAt: null } },
-      },
+  /**
+   * Which account a claim runs on.
+   *
+   * The tasker's own account first - one an admin assigned to them, as the
+   * manager's tracker does. Failing that, a pool account that is assigned to
+   * nobody. Never an account given to somebody else, and never one whose login
+   * details have not been loaded yet.
+   */
+  private async pickAccount(taskerId: string) {
+    const usable: Prisma.AccountWhereInput = {
+      state: 'HEALTHY',
+      OR: [{ cooldownUntil: null }, { cooldownUntil: { lt: new Date() } }],
+      holds: { none: { releasedAt: null } },
+      secret: { isNot: null },
+    };
+
+    const own = await this.db.account.findFirst({
+      where: { ...usable, assignments: { some: { taskerId, collectedAt: null } } },
       orderBy: { createdAt: 'asc' },
     });
-    if (!account) {
-      throw new ConflictException('No account is free right now. An assigner needs to free one up.');
+    if (own) return own;
+
+    const pooled = await this.db.account.findFirst({
+      where: { ...usable, assignments: { none: { collectedAt: null } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (pooled) return pooled;
+
+    const assigned = await this.db.account.findMany({
+      where: { assignments: { some: { taskerId, collectedAt: null } } },
+      select: { ref: true },
+    });
+    if (assigned.length) {
+      const refs = assigned.map((a) => a.ref).join(', ');
+      throw new ConflictException(
+        `Your account ${refs} cannot be used right now - it is resting, being checked, already on another task of yours, or has no login details yet. Raise a ticket so an admin can sort it out.`,
+      );
     }
-    return account;
+    throw new ConflictException(
+      'No account is free for you right now. Ask an admin to assign you one.',
+    );
   }
 
   // ------------------------------------------------------------------

@@ -1,5 +1,6 @@
 /** The login fields an account can carry, in the order a person reads them. */
 export const LOGIN_FIELDS = [
+  "host",
   "username",
   "email",
   "password",
@@ -14,6 +15,7 @@ export type LoginDetails = Partial<Record<LoginField, string>>;
 
 /** For use inside a sentence, where "Email" becomes "email" but "2FA" stays "2FA". */
 const FIELD_IN_SENTENCE: Record<LoginField, string> = {
+  host: "IP address",
   username: "username",
   email: "email",
   password: "password",
@@ -24,6 +26,7 @@ const FIELD_IN_SENTENCE: Record<LoginField, string> = {
 };
 
 export const FIELD_LABEL: Record<LoginField, string> = {
+  host: "IP address",
   username: "Username",
   email: "Email",
   password: "Password",
@@ -36,6 +39,23 @@ export const FIELD_LABEL: Record<LoginField, string> = {
 /** Values that are often several lines long, like a sheet of backup codes. */
 export const MULTILINE_FIELDS: LoginField[] = ["twoFactor", "extra"];
 
+/** How a tasker gets into the account, in the manager's words. */
+export type AccessType = "MORELOGIN" | "RDP" | "OTHER";
+
+export const ACCESS_LABEL: Record<AccessType, string> = {
+  MORELOGIN: "Morelogin profile",
+  RDP: "Remote desktop (RDP)",
+  OTHER: "Other",
+};
+
+export interface Assignee {
+  assignmentId: string;
+  taskerId: string;
+  name: string;
+  role: string;
+  since: string;
+}
+
 export interface AccountDetails {
   id: string;
   ref: string;
@@ -43,6 +63,9 @@ export interface AccountDetails {
   platform: string | null;
   loginUrl: string | null;
   notes: string | null;
+  owner?: string | null;
+  accessType?: AccessType;
+  assignedTo?: Assignee[];
   state: string;
   cooldownUntil?: string | null;
   fields: LoginField[];

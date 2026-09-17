@@ -12,6 +12,7 @@ import {
   type AccountDetails,
   type LoginDetails,
   type LoginField,
+  ACCESS_LABEL,
   FIELD_LABEL,
   MULTILINE_FIELDS,
   addedViaLabel,
@@ -77,7 +78,9 @@ export function AccountCard({
   const fields = details
     ? (Object.keys(FIELD_LABEL) as LoginField[]).filter((f) => details[f])
     : account.fields;
-  const title = account.platform || account.label || "Account";
+  const access =
+    account.accessType && account.accessType !== "OTHER" ? ACCESS_LABEL[account.accessType] : null;
+  const title = account.platform || account.label || access || "Account";
   const monogram = (account.platform || account.ref).trim().charAt(0).toUpperCase();
 
   return (
@@ -97,6 +100,9 @@ export function AccountCard({
               <span className="code text-ink-700">{account.ref}</span>
               {account.platform && account.label ? ` ${account.label}` : ""}
             </p>
+            {access && title !== access && (
+              <p className="mt-0.5 text-xs text-ink-500">{access}</p>
+            )}
           </div>
           <AccountBadge state={account.state} />
         </div>

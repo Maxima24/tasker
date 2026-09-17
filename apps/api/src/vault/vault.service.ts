@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AccountState, Channel, Prisma } from '@prisma/client';
+import { AccountAccess, AccountState, Channel, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthUser } from '../auth/auth.guard';
 import { CURRENT_KEY_VERSION, decryptCredential, encryptCredential } from './crypto';
@@ -18,6 +18,8 @@ import { Page, paginate, pageResult } from '../common/pagination';
  * 2FA codes are on file" without anybody revealing anything.
  */
 export const LOGIN_FIELDS = [
+  // For remote desktops: the machine's IP address and port, e.g. 185.1.2.3:3389.
+  'host',
   'username',
   'email',
   'password',
@@ -30,6 +32,7 @@ export type LoginField = (typeof LOGIN_FIELDS)[number];
 export type LoginDetails = Partial<Record<LoginField, string>>;
 
 const ACCOUNT_STATES: AccountState[] = ['HEALTHY', 'COOLDOWN', 'CHALLENGED', 'SUSPENDED', 'RETIRED'];
+const ACCESS_TYPES: AccountAccess[] = ['MORELOGIN', 'RDP', 'OTHER'];
 
 export interface AccountInput {
   ref?: string;
@@ -37,6 +40,8 @@ export interface AccountInput {
   platform?: string | null;
   loginUrl?: string | null;
   notes?: string | null;
+  owner?: string | null;
+  accessType?: AccountAccess;
   credentials?: LoginDetails;
   /** Field names to delete from the stored login details. */
   removeFields?: LoginField[];
@@ -95,7 +100,21 @@ function normalizeUrl(value: string | null | undefined) {
 const PUBLIC_INCLUDE = {
   addedBy: { select: { id: true, name: true, preferredName: true } },
   secret: { select: { fields: true, updatedAt: true, keyVersion: true } },
+  assignments: {
+    where: { collectedAt: null },
+    orderBy: { assignedAt: 'asc' },
+    include: { tasker: { select: { id: true, name: true, preferredName: true } } },
+  },
 } satisfies Prisma.AccountInclude;
+
+function accessType(value: unknown): AccountAccess | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const v = String(value).toUpperCase() as AccountAccess;
+  if (!ACCESS_TYPES.includes(v)) {
+    throw new BadRequestException('Access type must be Morelogin, RDP or Other.');
+  }
+  return v;
+}
 
 type PublicRow = Prisma.AccountGetPayload<{ include: typeof PUBLIC_INCLUDE }>;
 
@@ -125,9 +144,19 @@ export class VaultService {
       platform: a.platform,
       loginUrl: a.loginUrl,
       notes: a.notes,
+      owner: a.owner,
+      accessType: a.accessType,
       state: a.state,
       cooldownUntil: a.cooldownUntil,
       fields: (a.secret?.fields ?? []) as LoginField[],
+      // The manager's "Tasker" column: who the account is given to right now.
+      assignedTo: a.assignments.map((x) => ({
+        assignmentId: x.id,
+        taskerId: x.tasker.id,
+        name: x.tasker.preferredName || x.tasker.name,
+        role: x.role,
+        since: x.assignedAt,
+      })),
       addedBy: a.addedBy
         ? { id: a.addedBy.id, name: a.addedBy.preferredName || a.addedBy.name }
         : null,
@@ -141,19 +170,37 @@ export class VaultService {
   static readonly publicInclude = PUBLIC_INCLUDE;
 
   /** Pool health. Credentials are structurally absent from this shape. */
-  async list(page?: Page, search?: string) {
+  async list(page?: Page, search?: string, worked?: 'yes' | 'no') {
     const q = search?.trim();
-    const where: Prisma.AccountWhereInput = q
-      ? {
-          OR: [
-            { ref: { contains: q, mode: 'insensitive' } },
-            { label: { contains: q, mode: 'insensitive' } },
-            { platform: { contains: q, mode: 'insensitive' } },
-          ],
-        }
-      : {};
+    const where: Prisma.AccountWhereInput = {
+      ...(q
+        ? {
+            OR: [
+              { ref: { contains: q, mode: 'insensitive' } },
+              { label: { contains: q, mode: 'insensitive' } },
+              { platform: { contains: q, mode: 'insensitive' } },
+              { owner: { contains: q, mode: 'insensitive' } },
+              {
+                assignments: {
+                  some: {
+                    collectedAt: null,
+                    tasker: {
+                      OR: [
+                        { name: { contains: q, mode: 'insensitive' } },
+                        { preferredName: { contains: q, mode: 'insensitive' } },
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
+      ...(worked === 'yes' ? { assignments: { some: { collectedAt: null } } } : {}),
+      ...(worked === 'no' ? { assignments: { none: { collectedAt: null } } } : {}),
+    };
 
-    const [total, accounts, free] = await Promise.all([
+    const [total, accounts, free, summary] = await Promise.all([
       this.db.account.count({ where }),
       this.db.account.findMany({
         where,
@@ -180,6 +227,7 @@ export class VaultService {
           OR: [{ cooldownUntil: null }, { cooldownUntil: { lt: new Date() } }],
         },
       }),
+      this.summary(),
     ]);
 
     const items = accounts.map((a) => ({
@@ -191,7 +239,129 @@ export class VaultService {
     const result = page
       ? pageResult(items, total, page)
       : { items, total, page: 1, limit: total, pageCount: 1 };
-    return { ...result, free };
+    return { ...result, free, summary };
+  }
+
+  /** The manager's Dashboard tab, over the whole pool. */
+  async summary() {
+    const [total, beingWorked, people, tasksTotal, tasksCompleted] = await Promise.all([
+      this.db.account.count(),
+      this.db.account.count({ where: { assignments: { some: { collectedAt: null } } } }),
+      this.db.accountAssignment.findMany({
+        where: { collectedAt: null },
+        distinct: ['taskerId'],
+        select: { taskerId: true },
+      }),
+      this.db.task.count({ where: { accountId: { not: null } } }),
+      this.db.task.count({ where: { accountId: { not: null }, state: 'CLOSED' } }),
+    ]);
+    return {
+      totalAccounts: total,
+      beingWorkedOn: beingWorked,
+      noOneWorking: total - beingWorked,
+      peopleAssigned: people.length,
+      tasksTotal,
+      tasksCompleted,
+    };
+  }
+
+  /** Give an account to a tasker. It stays theirs between tasks until collected. */
+  async assign(
+    user: AuthUser,
+    idOrRef: string,
+    input: { taskerId: string; role?: string; assignedAt?: string },
+  ) {
+    const account = await this.findAccount(idOrRef);
+    const tasker = await this.db.user.findFirst({
+      where: { id: input.taskerId, role: 'TASKER', status: 'active' },
+    });
+    if (!tasker) throw new BadRequestException('Choose an active tasker to assign it to.');
+
+    const assignedAt = input.assignedAt ? new Date(input.assignedAt) : new Date();
+    if (Number.isNaN(assignedAt.getTime())) {
+      throw new BadRequestException('That assignment date is not a date.');
+    }
+    try {
+      await this.db.accountAssignment.create({
+        data: {
+          accountId: account.id,
+          taskerId: tasker.id,
+          role: input.role?.trim() || 'Tasker',
+          assignedAt,
+          assignedById: user.id,
+        },
+      });
+    } catch (e: any) {
+      if (e?.code === 'P2002') {
+        throw new ConflictException(
+          `${tasker.preferredName || tasker.name} already has ${account.ref}.`,
+        );
+      }
+      throw e;
+    }
+    return this.get(account.id);
+  }
+
+  /**
+   * Take an account back. Work already running on it finishes there; nothing
+   * new goes to this tasker on it. The assignment is kept, closed, as history.
+   */
+  async collect(user: AuthUser, idOrRef: string, assignmentId: string) {
+    const account = await this.findAccount(idOrRef);
+    const ended = await this.db.accountAssignment.updateMany({
+      where: { id: assignmentId, accountId: account.id, collectedAt: null },
+      data: { collectedAt: new Date(), collectedById: user.id },
+    });
+    if (ended.count === 0) {
+      throw new NotFoundException('That assignment has already been collected.');
+    }
+    const assignment = await this.db.accountAssignment.findUniqueOrThrow({
+      where: { id: assignmentId },
+      include: { tasker: { select: { name: true, preferredName: true } } },
+    });
+    const running = await this.db.accountHold.findFirst({
+      where: { accountId: account.id, taskerId: assignment.taskerId, releasedAt: null },
+      include: { task: { select: { code: true } } },
+    });
+    return {
+      account: await this.get(account.id),
+      // Said out loud, so nobody thinks collecting cut somebody off mid-task.
+      stillFinishing: running ? running.task.code : null,
+      taskerName: assignment.tasker.preferredName || assignment.tasker.name,
+    };
+  }
+
+  /** Every assignment an account has had, newest first - the People tab. */
+  async assignmentHistory(idOrRef: string) {
+    const account = await this.findAccount(idOrRef);
+    const rows = await this.db.accountAssignment.findMany({
+      where: { accountId: account.id },
+      orderBy: { assignedAt: 'desc' },
+      include: {
+        tasker: { select: { id: true, name: true, preferredName: true } },
+        assignedBy: { select: { name: true, preferredName: true } },
+        collectedBy: { select: { name: true, preferredName: true } },
+      },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      taskerId: r.tasker.id,
+      name: r.tasker.preferredName || r.tasker.name,
+      role: r.role,
+      active: r.collectedAt === null,
+      assignedAt: r.assignedAt,
+      assignedBy: r.assignedBy ? r.assignedBy.preferredName || r.assignedBy.name : null,
+      collectedAt: r.collectedAt,
+      collectedBy: r.collectedBy ? r.collectedBy.preferredName || r.collectedBy.name : null,
+    }));
+  }
+
+  private async findAccount(idOrRef: string) {
+    const account = await this.db.account.findFirst({
+      where: { OR: [{ id: idOrRef }, { ref: { equals: idOrRef.trim(), mode: 'insensitive' } }] },
+    });
+    if (!account) throw new NotFoundException(`No account called ${idOrRef}.`);
+    return account;
   }
 
   /** One account by id or by its reference (ACC-002) - the bot works in refs. */
@@ -221,7 +391,12 @@ export class VaultService {
     };
   }
 
-  async create(user: AuthUser, channel: Channel, input: AccountInput) {
+  async create(
+    user: AuthUser,
+    channel: Channel,
+    input: AccountInput,
+    opts: { allowNoLogin?: boolean } = {},
+  ) {
     const ref = input.ref?.trim().toUpperCase();
     if (!ref) throw new BadRequestException('Give the account a reference, like ACC-006.');
     if (ref.length > 40) throw new BadRequestException('Keep the reference under 40 characters.');
@@ -233,13 +408,16 @@ export class VaultService {
     if (clash) throw new ConflictException(`There is already an account called ${ref}.`);
 
     const details = cleanDetails(input.credentials);
-    if (!details.password && !details.username && !details.email && !details.extra) {
+    const hasLogin = !!(details.password || details.username || details.email || details.extra);
+    // A spreadsheet row can name an account whose login has not been collected
+    // yet. It is imported without one, and never handed out until it has one.
+    if (!hasLogin && !opts.allowNoLogin) {
       throw new BadRequestException(
         'Add the login details - at least a username or email, and usually a password.',
       );
     }
 
-    const { ciphertext, keyVersion } = encryptCredential(JSON.stringify(details), this.secret);
+    const sealed = hasLogin ? encryptCredential(JSON.stringify(details), this.secret) : null;
     const created = await this.db.account.create({
       data: {
         ref,
@@ -247,9 +425,21 @@ export class VaultService {
         platform: optionalText(input.platform, 60, 'The platform name') ?? null,
         loginUrl: normalizeUrl(input.loginUrl) ?? null,
         notes: optionalText(input.notes, 2000, 'The notes') ?? null,
+        owner: optionalText(input.owner, 80, 'The owner') ?? null,
+        accessType: accessType(input.accessType) ?? 'OTHER',
         addedById: user.id,
         addedVia: channel,
-        secret: { create: { ciphertext, keyVersion, fields: fieldsOf(details) } },
+        ...(sealed
+          ? {
+              secret: {
+                create: {
+                  ciphertext: sealed.ciphertext,
+                  keyVersion: sealed.keyVersion,
+                  fields: fieldsOf(details),
+                },
+              },
+            }
+          : {}),
       },
       include: PUBLIC_INCLUDE,
     });
@@ -273,6 +463,8 @@ export class VaultService {
       platform: optionalText(input.platform, 60, 'The platform name'),
       loginUrl: normalizeUrl(input.loginUrl),
       notes: optionalText(input.notes, 2000, 'The notes'),
+      owner: optionalText(input.owner, 80, 'The owner'),
+      accessType: accessType(input.accessType),
     };
 
     const incoming = cleanDetails(input.credentials);
@@ -287,7 +479,7 @@ export class VaultService {
       const merged: LoginDetails = { ...current, ...incoming };
       for (const f of removing) delete merged[f];
 
-      if (!merged.password && !merged.username && !merged.email && !merged.extra) {
+      if (!merged.password && !merged.username && !merged.email && !merged.extra && !merged.host) {
         throw new BadRequestException(
           'That would leave the account with no way to sign in. Keep a username or email.',
         );

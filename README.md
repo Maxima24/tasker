@@ -206,7 +206,7 @@ screen that shows the number also shows the sentence explaining it.
 | **Assignment** | What work has nobody on it? Grouped by what it needs from you. Most work is self-claimed; this is for pushing something at a named person. |
 | **Review** | Did the tasker do what the spec asked? Each requirement beside the screenshot captured for it. |
 | **Verification** | Did the external platform accept it? A recording step, not a judgement. |
-| **Accounts** | Which credentials are free, who holds what, who revealed what. |
+| **Accounts** | The manager's Account Tracker, live: who each account is assigned to and since when, its owner and how taskers get in (Morelogin or RDP), with Assign and Collect. **Import from spreadsheet** brings the tracker workbook in. |
 | **Taskers** | Who can work, how well they have done — and click anyone to audit every submission with its evidence. |
 | **Tickets** | Who is blocked right now. Each one arrives with the task, the account and how to phone them. |
 | **Task types** | What each kind of work requires: checklist, tutorial, and who is certified on which version. |
@@ -296,6 +296,21 @@ clients released from a barrier: exactly one winner, one account hold.
   client.
 
 ---
+
+### Accounts: assigned, not pooled
+
+Accounts work the way the manager's Account Tracker spreadsheet does. An admin
+assigns an account to a tasker, and that tasker's claims run on it until the
+account is collected back; collecting mid-task lets the running task finish on
+it. Assignments are kept as history, like the tracker's People tab. A tasker
+with no usable account of their own gets one assigned to nobody, and an account
+with no login details yet is never handed out.
+
+**Import from spreadsheet** on the Accounts page reads the tracker workbook:
+Accounts tab to accounts (RDP logins split into IP address and username,
+passwords encrypted on the way in), People tab to assignments (matched to taskers
+by name), Projects tab to draft task types. It previews first and returns no
+passwords; importing the same file twice changes nothing new.
 
 ### Tickets and alerting
 

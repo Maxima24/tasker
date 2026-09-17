@@ -3,15 +3,19 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ChevronDown, KeyRound, Pencil, Plus, Search, X } from "lucide-react";
+import { ChevronDown, FileSpreadsheet, KeyRound, Pencil, Plus, Search, Users, X } from "lucide-react";
 import { get, post, toApiError } from "@/lib/api";
 import { keys } from "@/lib/query-keys";
 import { AccountBadge } from "@/components/state-badge";
 import { relative, formatWAT } from "@/lib/utils";
 import { Pagination, usePage } from "@/components/pagination";
+import { AccountPeopleDialog } from "@/components/account-people-dialog";
+import { AccountImportDialog } from "@/components/account-import-dialog";
 import {
+  type AccessType,
   type AccountDetails,
   type LoginField,
+  ACCESS_LABEL,
   FIELD_LABEL,
   LOGIN_FIELDS,
   MULTILINE_FIELDS,
@@ -38,15 +42,26 @@ interface AccountPage {
   limit: number;
   pageCount: number;
   free: number;
+  summary: {
+    totalAccounts: number;
+    beingWorkedOn: number;
+    noOneWorking: number;
+    peopleAssigned: number;
+  };
 }
+
+type Worked = "all" | "yes" | "no";
 
 export default function AccountsPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = React.useState("");
   const [query, setQuery] = React.useState("");
-  const [page, setPage] = usePage(query);
+  const [worked, setWorked] = React.useState<Worked>("all");
+  const [page, setPage] = usePage(`${query}|${worked}`);
   const [editing, setEditing] = React.useState<Account | "new" | null>(null);
   const [changingState, setChangingState] = React.useState<Account | null>(null);
+  const [people, setPeople] = React.useState<Account | null>(null);
+  const [importing, setImporting] = React.useState(false);
 
   // Search as they type, without a request per keystroke.
   React.useEffect(() => {
@@ -55,9 +70,13 @@ export default function AccountsPage() {
   }, [search]);
 
   const { data: paged, isLoading } = useQuery<AccountPage>({
-    queryKey: [...keys.accounts, page, query],
+    queryKey: [...keys.accounts, page, query, worked],
     queryFn: () =>
-      get(`accounts?page=${page}&limit=25${query ? `&q=${encodeURIComponent(query)}` : ""}`),
+      get(
+        `accounts?page=${page}&limit=25${query ? `&q=${encodeURIComponent(query)}` : ""}${
+          worked === "all" ? "" : `&worked=${worked}`
+        }`,
+      ),
     refetchInterval: 20000,
   });
 
@@ -69,22 +88,65 @@ export default function AccountsPage() {
         <div>
           <h1 className="text-xl font-semibold text-ink-900">Accounts</h1>
           <p className="mt-1 max-w-xl text-sm text-ink-500">
-            {paged
-              ? `${paged.free} of ${paged.total} free to be checked out right now.`
-              : "The accounts taskers work on."}{" "}
-            An account is held by one task at a time, and taskers see only the one on their
-            own task.
+            Each account is assigned to the people working it, and their tasks run on it until
+            you collect it back. Taskers only ever see the account on their own task.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setEditing("new")}
-          className="inline-flex items-center gap-1.5 rounded-md bg-ink-900 px-3.5 py-2 text-sm font-medium text-white hover:bg-ink-800"
-        >
-          <Plus className="size-4" />
-          Add account
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setImporting(true)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-ink-300 px-3.5 py-2 text-sm font-medium text-ink-800 hover:bg-ink-50"
+          >
+            <FileSpreadsheet className="size-4" />
+            Import from spreadsheet
+          </button>
+          <button
+            type="button"
+            onClick={() => setEditing("new")}
+            className="inline-flex items-center gap-1.5 rounded-md bg-ink-900 px-3.5 py-2 text-sm font-medium text-white hover:bg-ink-800"
+          >
+            <Plus className="size-4" />
+            Add account
+          </button>
+        </div>
       </header>
+
+      {/* The manager's Dashboard tab, and the filters it implies. */}
+      {paged?.summary && (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" role="group" aria-label="Filter accounts">
+          {(
+            [
+              { key: "all", label: "Total accounts", value: paged.summary.totalAccounts },
+              { key: "yes", label: "Being worked on", value: paged.summary.beingWorkedOn },
+              { key: "no", label: "No one currently working", value: paged.summary.noOneWorking },
+            ] as { key: Worked; label: string; value: number }[]
+          ).map((s) => (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => setWorked(s.key)}
+              aria-pressed={worked === s.key}
+              className={`rounded-xl border px-4 py-3 text-left transition-colors ${
+                worked === s.key
+                  ? "border-ink-900 bg-ink-900 text-white"
+                  : "border-ink-200 bg-white text-ink-900 hover:border-ink-300"
+              }`}
+            >
+              <span className="block text-2xl font-semibold tabular-nums">{s.value}</span>
+              <span className={`block text-xs ${worked === s.key ? "text-ink-200" : "text-ink-500"}`}>
+                {s.label}
+              </span>
+            </button>
+          ))}
+          <div className="rounded-xl border border-ink-200 bg-white px-4 py-3">
+            <span className="block text-2xl font-semibold tabular-nums text-ink-900">
+              {paged.summary.peopleAssigned}
+            </span>
+            <span className="block text-xs text-ink-500">People assigned</span>
+          </div>
+        </div>
+      )}
 
       <label className="relative block max-w-sm">
         <span className="sr-only">Search accounts</span>
@@ -92,7 +154,7 @@ export default function AccountsPage() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by reference, label or platform"
+          placeholder="Search by ID, name, owner or tasker"
           className="w-full rounded-lg border border-ink-200 py-2 pl-9 pr-3 text-sm outline-none focus:border-ink-500"
         />
       </label>
@@ -103,12 +165,20 @@ export default function AccountsPage() {
         <div className="rounded-xl border border-dashed border-ink-200 px-6 py-12 text-center">
           <KeyRound className="mx-auto size-8 text-ink-300" />
           <p className="mt-3 font-medium text-ink-900">
-            {query ? `Nothing matches "${query}"` : "No accounts yet"}
+            {query
+              ? `Nothing matches "${query}"`
+              : worked === "yes"
+                ? "No account is assigned to anyone"
+                : worked === "no"
+                  ? "Every account has someone on it"
+                  : "No accounts yet"}
           </p>
           <p className="mx-auto mt-1 max-w-sm text-sm text-ink-500">
             {query
-              ? "Try the reference, like ACC-002, or the platform name."
-              : "Taskers cannot claim work until there is a free account to check out. Add the first one."}
+              ? "Try the account ID, like ACC-002, the owner, or a tasker's name."
+              : worked === "all"
+                ? "Import the Account Tracker spreadsheet, or add the first account by hand."
+                : "Choose Total accounts to see them all."}
           </p>
         </div>
       ) : (
@@ -119,6 +189,7 @@ export default function AccountsPage() {
               account={a}
               onEdit={() => setEditing(a)}
               onChangeState={() => setChangingState(a)}
+              onPeople={() => setPeople(a)}
             />
           ))}
         </ul>
@@ -140,6 +211,22 @@ export default function AccountsPage() {
           }}
         />
       )}
+      {people && (
+        <AccountPeopleDialog
+          account={people}
+          onClose={() => setPeople(null)}
+          onChanged={refresh}
+        />
+      )}
+      {importing && (
+        <AccountImportDialog
+          onClose={() => setImporting(false)}
+          onDone={() => {
+            refresh();
+            queryClient.invalidateQueries({ queryKey: keys.taskTypes });
+          }}
+        />
+      )}
       {changingState && (
         <StateDialog
           account={changingState}
@@ -158,11 +245,14 @@ function AccountRow({
   account: a,
   onEdit,
   onChangeState,
+  onPeople,
 }: {
   account: Account;
   onEdit: () => void;
   onChangeState: () => void;
+  onPeople: () => void;
 }) {
+  const assigned = a.assignedTo ?? [];
   const [open, setOpen] = React.useState(false);
 
   return (
@@ -179,23 +269,41 @@ function AccountRow({
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
             <span className="code font-semibold text-ink-900">{a.ref}</span>
             <span className="text-sm text-ink-700">
-              {[a.platform, a.label].filter(Boolean).join(", ") || "No platform set"}
+              {[a.label, a.platform].filter(Boolean).join(", ") || "No name set"}
             </span>
+            {a.accessType && a.accessType !== "OTHER" && (
+              <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[0.7rem] font-medium text-ink-700">
+                {a.accessType === "RDP" ? "RDP" : "Morelogin"}
+              </span>
+            )}
             <AccountBadge state={a.state} />
           </div>
 
           <p className="mt-1 text-sm text-ink-600">
+            {assigned.length ? (
+              <>
+                <span className="font-medium text-ink-900">
+                  {assigned.map((x) => x.name).join(", ")}
+                </span>
+                {assigned.length === 1 ? `, since ${formatWAT(assigned[0].since)}` : ""}
+              </>
+            ) : (
+              <span className="text-warn">No one currently working</span>
+            )}
+            {a.owner && <span className="text-ink-500">, owner {a.owner}</span>}
+          </p>
+          <p className="mt-0.5 text-xs text-ink-500">
             {a.heldBy ? (
               <>
-                Held by <span className="font-medium text-ink-900">{a.heldBy.taskerName}</span> on{" "}
-                <span className="code">{a.heldBy.taskCode}</span>, {relative(a.heldBy.heldAt)}
+                In use on <span className="code">{a.heldBy.taskCode}</span> by {a.heldBy.taskerName},{" "}
+                {relative(a.heldBy.heldAt)}
               </>
-            ) : a.state === "HEALTHY" ? (
-              "Free"
             ) : a.state === "COOLDOWN" && a.cooldownUntil ? (
               `Resting until ${formatWAT(a.cooldownUntil)}`
+            ) : a.state === "HEALTHY" ? (
+              a.fields.length ? "Not on a task right now" : "Cannot be used until its login details are added"
             ) : (
-              "Not available to taskers"
+              "Not handed out while in this state"
             )}
           </p>
 
@@ -215,7 +323,15 @@ function AccountRow({
           )}
         </div>
 
-        <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
+        <div className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:w-auto">
+          <button
+            type="button"
+            onClick={onPeople}
+            className="inline-flex items-center gap-1.5 rounded-md border border-ink-300 px-3 py-1.5 text-xs font-medium text-ink-800 hover:bg-ink-50"
+          >
+            <Users className="size-3.5" />
+            {assigned.length ? "People" : "Assign"}
+          </button>
           <button
             type="button"
             onClick={onEdit}
@@ -306,6 +422,7 @@ function AccountExtras({ account }: { account: Account }) {
 }
 
 const FIELD_PLACEHOLDER: Record<LoginField, string> = {
+  host: "185.10.20.30:3389",
   username: "ops.acc006",
   email: "ops.acc006@mail.com",
   password: "The account password",
@@ -336,6 +453,8 @@ function AccountDialog({
   const [label, setLabel] = React.useState(account?.label ?? "");
   const [loginUrl, setLoginUrl] = React.useState(account?.loginUrl ?? "");
   const [notes, setNotes] = React.useState(account?.notes ?? "");
+  const [owner, setOwner] = React.useState(account?.owner ?? "");
+  const [access, setAccess] = React.useState<AccessType>(account?.accessType ?? "OTHER");
   const [creds, setCreds] = React.useState<Partial<Record<LoginField, string>>>({});
   const [removing, setRemoving] = React.useState<LoginField[]>([]);
   const [showSecrets, setShowSecrets] = React.useState(false);
@@ -352,6 +471,8 @@ function AccountDialog({
         label,
         loginUrl,
         notes,
+        owner,
+        accessType: access,
         credentials,
         ...(editing ? { removeFields: removing } : { ref }),
       };
@@ -431,6 +552,27 @@ function AccountDialog({
                 className="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm outline-none focus:border-ink-500"
               />
             </Field>
+            <Field label="Account owner" hint="Who the account belongs to.">
+              <input
+                value={owner}
+                onChange={(e) => setOwner(e.target.value)}
+                placeholder="Owner's name"
+                className="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm outline-none focus:border-ink-500"
+              />
+            </Field>
+            <Field label="How taskers get in">
+              <select
+                value={access}
+                onChange={(e) => setAccess(e.target.value as AccessType)}
+                className="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm"
+              >
+                {(Object.keys(ACCESS_LABEL) as AccessType[]).map((k) => (
+                  <option key={k} value={k}>
+                    {ACCESS_LABEL[k]}
+                  </option>
+                ))}
+              </select>
+            </Field>
             <Field label="Sign-in link">
               <input
                 value={loginUrl}
@@ -459,7 +601,7 @@ function AccountDialog({
               </p>
             )}
             <div className="grid gap-4 sm:grid-cols-2">
-              {LOGIN_FIELDS.map((field) => {
+              {LOGIN_FIELDS.filter((f) => f !== "host" || access === "RDP" || stored.has("host")).map((field) => {
                 const multiline = MULTILINE_FIELDS.includes(field);
                 const isStored = stored.has(field) && !removing.includes(field);
                 const common = {

@@ -171,6 +171,8 @@ async function main() {
   const pool = [
     {
       ref: 'ACC-001',
+      access: 'MORELOGIN' as const,
+      owner: 'Adaeze Okafor',
       label: 'Lagos listings',
       platform: 'Upwork',
       loginUrl: 'https://www.upwork.com/ab/account-security/login',
@@ -180,15 +182,19 @@ async function main() {
     },
     {
       ref: 'ACC-002',
+      access: 'RDP' as const,
+      owner: 'Bola Hassan',
       label: 'Outreach desk',
       platform: 'LinkedIn',
       loginUrl: 'https://www.linkedin.com/login',
       notes: 'Keep connection requests under 40 a day. Never change the profile photo or headline.',
-      login: { email: 'ops.acc002@mail.dev', password: 'pw-ACC-002-x9f2', recoveryEmail: 'recovery.acc002@mail.dev' },
+      login: { host: '185.10.20.30:3389', email: 'ops.acc002@mail.dev', password: 'pw-ACC-002-x9f2', recoveryEmail: 'recovery.acc002@mail.dev' },
       via: 'TELEGRAM' as const,
     },
     {
       ref: 'ACC-003',
+      access: 'MORELOGIN' as const,
+      owner: 'Kemi Lawal',
       label: 'Marketplace seller',
       platform: 'Fiverr',
       loginUrl: 'https://www.fiverr.com/login',
@@ -198,26 +204,30 @@ async function main() {
     },
     {
       ref: 'ACC-004',
+      access: 'RDP' as const,
+      owner: 'Ifeanyi Eze',
       label: 'Reviews queue',
       platform: 'Google Business',
       loginUrl: 'https://business.google.com',
       notes: null,
-      login: { email: 'ops.acc004@mail.dev', password: 'pw-ACC-004-x9f2', phone: '+234 803 000 0004' },
+      login: { host: '185.10.20.44:3389', email: 'ops.acc004@mail.dev', password: 'pw-ACC-004-x9f2', phone: '+234 803 000 0004' },
       via: 'TELEGRAM' as const,
     },
     {
       ref: 'ACC-005',
+      access: 'RDP' as const,
+      owner: 'Bola Hassan',
       label: 'Spare',
       platform: 'Upwork',
       loginUrl: 'https://www.upwork.com/ab/account-security/login',
       notes: 'Resting after a verification check. Leave it alone until the cooldown ends.',
-      login: { username: 'ops.acc005', email: 'ops.acc005@mail.dev', password: 'pw-ACC-005-x9f2' },
+      login: { host: '185.10.20.51:3389', username: 'ops.acc005', email: 'ops.acc005@mail.dev', password: 'pw-ACC-005-x9f2' },
       via: 'WEB' as const,
     },
   ];
   for (const [i, a] of pool.entries()) {
     const { ciphertext, keyVersion } = encryptCredential(JSON.stringify(a.login), SECRET);
-    const fields = ['username', 'email', 'password', 'phone', 'twoFactor', 'recoveryEmail', 'extra'].filter(
+    const fields = ['host', 'username', 'email', 'password', 'phone', 'twoFactor', 'recoveryEmail', 'extra'].filter(
       (k) => (a.login as Record<string, string | undefined>)[k],
     );
     accounts.push(
@@ -228,6 +238,8 @@ async function main() {
           platform: a.platform,
           loginUrl: a.loginUrl,
           notes: a.notes,
+          owner: a.owner,
+          accessType: a.access,
           addedById: a.via === 'TELEGRAM' ? admin.id : subAdmin.id,
           addedVia: a.via,
           state: i === 4 ? 'COOLDOWN' : 'HEALTHY',
@@ -237,6 +249,31 @@ async function main() {
       }),
     );
   }
+
+  // Who each account is given to - the manager's People tab. Chidi, Emeka and
+  // Funke keep the accounts their seeded tasks run on; ACC-001 is in the pool
+  // for anyone; ACC-005 was collected back from Zainab and is history.
+  console.log('account assignments...');
+  const days = (n: number) => new Date(Date.now() - n * 86_400_000);
+  for (const [account, tasker, since] of [
+    [accounts[1], taskers[0], 12],
+    [accounts[2], taskers[2], 9],
+    [accounts[3], taskers[1], 20],
+  ] as const) {
+    await db.accountAssignment.create({
+      data: { accountId: account.id, taskerId: tasker.id, assignedAt: days(since), assignedById: subAdmin.id },
+    });
+  }
+  await db.accountAssignment.create({
+    data: {
+      accountId: accounts[4].id,
+      taskerId: taskers[3].id,
+      assignedAt: days(30),
+      assignedById: admin.id,
+      collectedAt: days(2),
+      collectedById: admin.id,
+    },
+  });
 
   console.log('task types + specs...');
   const outreach = await db.taskType.create({

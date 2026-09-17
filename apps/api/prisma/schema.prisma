@@ -15,6 +15,7 @@ enum Role {
   SUB_ADMIN
   TASKER
 }
+
 enum TaskCategory {
   STANDARD
   CRITICAL
@@ -42,15 +43,18 @@ enum AccountState {
   SUSPENDED
   RETIRED
 }
+
 enum Channel {
   WEB
   TELEGRAM
   SYSTEM
 }
+
 enum ReviewStage {
   INTERNAL
   EXTERNAL
 }
+
 enum ReviewOutcome {
   PASS
   FAIL
@@ -85,6 +89,14 @@ enum TicketPriority {
   URGENT
 }
 
+// How a tasker gets into the account: a Morelogin browser profile, a remote
+// desktop (RDP) machine, or anything else.
+enum AccountAccess {
+  MORELOGIN
+  RDP
+  OTHER
+}
+
 enum AccountIssueCause {
   ROUTINE_CHALLENGE
   ACCESS_CHANGED
@@ -93,36 +105,39 @@ enum AccountIssueCause {
 }
 
 model User {
-  id             String   @id @default(cuid())
-  role           Role
-  name           String
+  id                 String   @id @default(cuid())
+  role               Role
+  name               String
   // What they are called across the app. Falls back to name when unset.
-  preferredName  String?
-  phone          String?
-  email          String   @unique
-  passwordHash   String?
+  preferredName      String?
+  phone              String?
+  email              String   @unique
+  passwordHash       String?
   // Set when somebody else chose the password (an invite, the first admin).
   // Until they pick their own, the API answers nothing but the change itself.
-  mustChangePassword Boolean @default(false)
-  telegramUserId BigInt?  @unique
-  status         String   @default("active")
-  createdAt      DateTime @default(now())
+  mustChangePassword Boolean  @default(false)
+  telegramUserId     BigInt?  @unique
+  status             String   @default("active")
+  createdAt          DateTime @default(now())
 
-  tasks            Task[]              @relation("assignee")
-  certifications   Certification[]
-  stats            TaskerStats?
-  offers           TaskOffer[]
-  holds            AccountHold[]
-  workRequests     WorkRequest[]
-  tutorialProgress TutorialProgress[]
-  quizAttempts     QuizAttempt[]
-  incidents        Incident[]
-  linkNonces       TelegramLinkNonce[]
-  tickets          Ticket[]            @relation("raisedBy")
-  claimedTickets   Ticket[]            @relation("claimedBy")
-  ticketMessages   TicketMessage[]
-  accountsAdded    Account[]           @relation("accountAddedBy")
-  pushDevices      PushSubscription[]
+  tasks              Task[]              @relation("assignee")
+  certifications     Certification[]
+  stats              TaskerStats?
+  offers             TaskOffer[]
+  holds              AccountHold[]
+  workRequests       WorkRequest[]
+  tutorialProgress   TutorialProgress[]
+  quizAttempts       QuizAttempt[]
+  incidents          Incident[]
+  linkNonces         TelegramLinkNonce[]
+  tickets            Ticket[]            @relation("raisedBy")
+  claimedTickets     Ticket[]            @relation("claimedBy")
+  ticketMessages     TicketMessage[]
+  accountsAdded      Account[]           @relation("accountAddedBy")
+  pushDevices        PushSubscription[]
+  accountAssignments AccountAssignment[] @relation("assignee")
+  assignmentsMade    AccountAssignment[] @relation("assignedBy")
+  assignmentsEnded   AccountAssignment[] @relation("collectedBy")
 }
 
 model TaskType {
@@ -237,28 +252,32 @@ model Certification {
 }
 
 model Account {
-  id            String       @id @default(cuid())
-  ref           String       @unique
+  id            String        @id @default(cuid())
+  ref           String        @unique
   label         String?
   // What a tasker sees before revealing anything. None of it is secret: which
   // platform, where to sign in, and the instructions the admin left for them.
   platform      String?
   loginUrl      String?
   notes         String?
-  state         AccountState @default(HEALTHY)
+  // The person the account belongs to, as the manager's tracker records it.
+  owner         String?
+  accessType    AccountAccess @default(OTHER)
+  state         AccountState  @default(HEALTHY)
   cooldownUntil DateTime?
   // Who put these details in, and from which surface - the bot or the console.
   addedById     String?
-  addedVia      Channel      @default(WEB)
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @default(now()) @updatedAt
+  addedVia      Channel       @default(WEB)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @default(now()) @updatedAt
 
-  addedBy User?          @relation("accountAddedBy", fields: [addedById], references: [id])
-  secret  AccountSecret?
-  holds   AccountHold[]
-  reveals CredentialReveal[]
-  tasks   Task[]
-  tickets Ticket[]
+  addedBy     User?               @relation("accountAddedBy", fields: [addedById], references: [id])
+  secret      AccountSecret?
+  assignments AccountAssignment[]
+  holds       AccountHold[]
+  reveals     CredentialReveal[]
+  tasks       Task[]
+  tickets     Ticket[]
 }
 
 model AccountSecret {
@@ -285,10 +304,10 @@ model AccountHold {
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
   task    Task    @relation(fields: [taskId], references: [id], onDelete: Cascade)
   tasker  User    @relation(fields: [taskerId], references: [id], onDelete: Cascade)
-
-  @@index([accountId, releasedAt])
   // Exclusivity is a partial unique index - (accountId) WHERE released_at IS NULL -
   // created in prisma/bootstrap.sql. Application logic must never be the guard.
+
+  @@index([accountId, releasedAt])
 }
 
 model CredentialReveal {
@@ -478,7 +497,6 @@ model Setting {
   updatedAt DateTime @updatedAt
 }
 
-
 // A tasker raises a ticket when something blocks them - usually the account
 // they were given. It carries enough context that an admin can act without a
 // conversation: which task, which account, and who to call back.
@@ -487,16 +505,16 @@ model Setting {
 // reference, and revealing from it goes through the vault like any other
 // reveal, so it still writes a CredentialReveal row naming who looked.
 model Ticket {
-  id       String         @id @default(cuid())
-  code     String         @unique // TKT-118
-  taskerId String
-  taskId   String?
+  id        String         @id @default(cuid())
+  code      String         @unique // TKT-118
+  taskerId  String
+  taskId    String?
   accountId String?
-  category TicketCategory
-  priority TicketPriority @default(NORMAL)
-  subject  String
-  body     String
-  status   TicketStatus   @default(OPEN)
+  category  TicketCategory
+  priority  TicketPriority @default(NORMAL)
+  subject   String
+  body      String
+  status    TicketStatus   @default(OPEN)
 
   claimedById String?
   claimedAt   DateTime?
@@ -549,4 +567,30 @@ model PushSubscription {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+// Who an account is given to - the manager's "People" tab. An account stays
+// with its tasker between tasks, until an admin collects it back. Ended rows
+// are kept: they are the history of who held the account and when.
+//
+// Not to be confused with AccountHold, which is the account being in use on one
+// specific task right now.
+model AccountAssignment {
+  id            String    @id @default(cuid())
+  accountId     String
+  taskerId      String
+  role          String    @default("Tasker")
+  assignedAt    DateTime  @default(now())
+  assignedById  String?
+  // Set when the account is collected back. Null means the assignment is live.
+  collectedAt   DateTime?
+  collectedById String?
+
+  account     Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  tasker      User    @relation("assignee", fields: [taskerId], references: [id], onDelete: Cascade)
+  assignedBy  User?   @relation("assignedBy", fields: [assignedById], references: [id])
+  collectedBy User?   @relation("collectedBy", fields: [collectedById], references: [id])
+
+  @@index([accountId, collectedAt])
+  @@index([taskerId, collectedAt])
 }

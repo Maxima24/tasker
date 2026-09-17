@@ -415,6 +415,7 @@ ACCOUNT_STATE_LABEL = {
 }
 
 FIELD_WORDS = {
+    "host": "IP address",
     "username": "username",
     "email": "email",
     "password": "password",
@@ -427,6 +428,9 @@ FIELD_WORDS = {
 ROLE_WORDS = {"ADMIN": "admin", "SUB_ADMIN": "sub-admin", "TASKER": "tasker"}
 
 VIA_WORDS = {"TELEGRAM": "via Telegram", "WEB": "on the console", "SYSTEM": "automatically"}
+
+
+ACCESS_WORDS = {"MORELOGIN": "Morelogin profile", "RDP": "Remote desktop (RDP)"}
 
 
 def _fields(fields: list) -> str:
@@ -442,12 +446,17 @@ def _account_state(a: dict) -> str:
     return ACCOUNT_STATE_LABEL.get(a["state"], a["state"].lower())
 
 
+def _assigned(a: dict) -> str:
+    """Who the account is given to, in the manager's words."""
+    people = [escape(p["name"]) for p in (a.get("assignedTo") or [])]
+    return ", ".join(people) if people else "no one currently working"
+
+
 def _account_use(a: dict) -> str:
     held = a.get("heldBy")
     if held:
-        return f"held by {escape(held['taskerName'])} on {escape(held['taskCode'])}"
-    # Only a healthy account is ever handed out, so only that one is "free".
-    return "free" if a["state"] == "HEALTHY" else "not in use"
+        return f"{_assigned(a)}, on {escape(held['taskCode'])} now"
+    return _assigned(a)
 
 
 def accounts(data: dict, console_url: str) -> tuple[str, InlineKeyboardMarkup]:
@@ -518,8 +527,21 @@ def account_detail(
     lines.append(title)
     if a.get("label"):
         lines.append(escape(a["label"]))
+    access = ACCESS_WORDS.get(a.get("accessType") or "")
+    if access:
+        lines.append(access)
+    if a.get("owner"):
+        lines.append(f"Owner: {escape(a['owner'])}")
     lines.append("")
 
+    assigned = a.get("assignedTo") or []
+    if assigned:
+        lines.append(
+            "Assigned to: "
+            + ", ".join(f"{escape(p['name'])} (since {_ago(p.get('since'))})" for p in assigned)
+        )
+    else:
+        lines.append("Assigned to: no one currently working")
     lines.append(f"State: {_account_state(a)}")
     if a["state"] != "HEALTHY":
         # Nothing flips an account back on its own, a finished rest included.
