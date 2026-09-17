@@ -331,6 +331,55 @@ export class VaultService {
     };
   }
 
+  /**
+   * The manager's People tab across every account: account, person, role,
+   * whether they are active on it, and when they were assigned.
+   */
+  async people(page?: Page, active?: 'yes' | 'no', search?: string) {
+    const q = search?.trim();
+    const where: Prisma.AccountAssignmentWhereInput = {
+      ...(active === 'yes' ? { collectedAt: null } : {}),
+      ...(active === 'no' ? { collectedAt: { not: null } } : {}),
+      ...(q
+        ? {
+            OR: [
+              { account: { ref: { contains: q, mode: 'insensitive' } } },
+              { account: { label: { contains: q, mode: 'insensitive' } } },
+              { tasker: { name: { contains: q, mode: 'insensitive' } } },
+              { tasker: { preferredName: { contains: q, mode: 'insensitive' } } },
+            ],
+          }
+        : {}),
+    };
+    const [total, rows] = await Promise.all([
+      this.db.accountAssignment.count({ where }),
+      this.db.accountAssignment.findMany({
+        where,
+        orderBy: [{ collectedAt: { sort: 'desc', nulls: 'first' } }, { assignedAt: 'desc' }],
+        include: {
+          account: { select: { id: true, ref: true, label: true, accessType: true } },
+          tasker: { select: { id: true, name: true, preferredName: true } },
+          assignedBy: { select: { name: true, preferredName: true } },
+          collectedBy: { select: { name: true, preferredName: true } },
+        },
+        ...paginate(page),
+      }),
+    ]);
+    const items = rows.map((r) => ({
+      id: r.id,
+      account: r.account,
+      taskerId: r.tasker.id,
+      name: r.tasker.preferredName || r.tasker.name,
+      role: r.role,
+      active: r.collectedAt === null,
+      assignedAt: r.assignedAt,
+      assignedBy: r.assignedBy ? r.assignedBy.preferredName || r.assignedBy.name : null,
+      collectedAt: r.collectedAt,
+      collectedBy: r.collectedBy ? r.collectedBy.preferredName || r.collectedBy.name : null,
+    }));
+    return page ? pageResult(items, total, page) : { items, total, page: 1, limit: total, pageCount: 1 };
+  }
+
   /** Every assignment an account has had, newest first - the People tab. */
   async assignmentHistory(idOrRef: string) {
     const account = await this.findAccount(idOrRef);

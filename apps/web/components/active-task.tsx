@@ -41,6 +41,7 @@ interface Task {
 
 export function ActiveTask({ task }: { task: Task }) {
   const queryClient = useQueryClient();
+  const { data: me } = useQuery<{ id: string }>({ queryKey: keys.me, queryFn: () => get("auth/me") });
   const [hours, setHours] = React.useState("");
   const [missing, setMissing] = React.useState<string[]>([]);
   const [releasing, setReleasing] = React.useState(false);
@@ -210,6 +211,7 @@ export function ActiveTask({ task }: { task: Task }) {
               account={task.account}
               heading="Work this task on"
               helpHref="/tickets"
+              viewerId={me?.id}
             />
           )}
 

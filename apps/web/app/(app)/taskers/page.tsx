@@ -7,6 +7,7 @@ import { UserPlus } from "lucide-react";
 import { InviteDialog } from "@/components/invite-dialog";
 import { get } from "@/lib/api";
 import { keys } from "@/lib/query-keys";
+import { formatDayWAT } from "@/lib/utils";
 
 export default function TaskersPage() {
   const [inviting, setInviting] = React.useState(false);
@@ -60,6 +61,7 @@ function Table({ title, rows, note }: { title: string; rows: any[]; note?: strin
           <thead className="border-b border-ink-200 bg-ink-50 text-left text-xs uppercase tracking-wide text-ink-400">
             <tr>
               <th className="px-4 py-2.5 font-medium">Tasker</th>
+              <th className="px-4 py-2.5 font-medium">Account &amp; date assigned</th>
               <th className="px-4 py-2.5 font-medium">Score</th>
               <th className="px-4 py-2.5 font-medium">Approved</th>
               <th className="px-4 py-2.5 font-medium">Closed</th>
@@ -78,6 +80,18 @@ function Table({ title, rows, note }: { title: string; rows: any[]; note?: strin
                     {t.name}
                   </Link>
                   {t.busy && <span className="ml-2 text-xs text-warn">busy</span>}
+                </td>
+                <td className="px-4 py-3">
+                  {t.accounts?.length ? (
+                    t.accounts.map((a: any) => (
+                      <p key={a.accountId} className="whitespace-nowrap text-ink-700">
+                        <span className="code font-medium text-ink-900">{a.ref}</span>
+                        <span className="text-xs text-ink-500"> assigned {formatDayWAT(a.assignedAt)}</span>
+                      </p>
+                    ))
+                  ) : (
+                    <span className="text-xs text-ink-400">No account</span>
+                  )}
                 </td>
                 <td className="px-4 py-3 tabular-nums font-medium text-ink-900">
                   {t.score.toFixed(2)}

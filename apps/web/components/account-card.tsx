@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { Check, Copy, ExternalLink, Eye, EyeOff } from "lucide-react";
 import { post, toApiError } from "@/lib/api";
 import { AccountBadge } from "@/components/state-badge";
-import { formatWAT, relative } from "@/lib/utils";
+import { formatDayWAT, formatWAT, relative } from "@/lib/utils";
 import {
   type AccountDetails,
   type LoginDetails,
@@ -34,10 +34,13 @@ export function AccountCard({
   heading = "Account for this task",
   revealNote = "Revealing is logged against you and this task.",
   helpHref,
+  viewerId,
 }: {
   account: AccountDetails;
   heading?: string;
   revealNote?: string;
+  /** The signed-in person. When the account is assigned to them, the card says since when. */
+  viewerId?: string;
   /** Where to send someone whose login does not work. Taskers get a ticket link. */
   helpHref?: string;
 }) {
@@ -106,6 +109,13 @@ export function AccountCard({
           </div>
           <AccountBadge state={account.state} />
         </div>
+
+        {(() => {
+          const mine = viewerId ? account.assignedTo?.find((a) => a.taskerId === viewerId) : undefined;
+          return mine ? (
+            <p className="mt-3 text-xs text-ink-500">Assigned to you {formatDayWAT(mine.since)}</p>
+          ) : null;
+        })()}
 
         {account.state === "COOLDOWN" && account.cooldownUntil && (
           <p className="mt-3 text-xs text-warn">Resting until {formatWAT(account.cooldownUntil)}</p>

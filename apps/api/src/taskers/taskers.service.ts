@@ -43,6 +43,11 @@ export class TaskersService {
       include: {
         stats: true,
         tasks: { where: { state: { in: ['IN_PROGRESS', 'REWORK'] } }, select: { id: true } },
+        accountAssignments: {
+          where: { collectedAt: null },
+          orderBy: { assignedAt: 'asc' },
+          include: { account: { select: { id: true, ref: true, label: true, accessType: true } } },
+        },
       },
       orderBy: { name: 'asc' },
     });
@@ -59,6 +64,15 @@ export class TaskersService {
       medianSubmitMinutes: t.stats?.medianSubmitMinutes ?? 0,
       reworkRate: t.stats?.reworkRate ?? 0,
       busy: t.tasks.length > 0,
+      // The People tab, per person: which account they have and since when.
+      accounts: t.accountAssignments.map((a) => ({
+        accountId: a.account.id,
+        ref: a.account.ref,
+        label: a.account.label,
+        accessType: a.account.accessType,
+        role: a.role,
+        assignedAt: a.assignedAt,
+      })),
       ranked: (t.stats?.closedCount ?? 0) >= minClosed,
     }));
 
@@ -191,11 +205,31 @@ export class TaskersService {
       },
     });
 
-    const capacity = await this.capacity.forTasker(taskerId);
+    const [capacity, assignments] = await Promise.all([
+      this.capacity.forTasker(taskerId),
+      this.db.accountAssignment.findMany({
+        where: { taskerId },
+        orderBy: [{ collectedAt: { sort: 'desc', nulls: 'first' } }, { assignedAt: 'desc' }],
+        include: { account: { select: { id: true, ref: true, label: true, accessType: true } } },
+      }),
+    ]);
 
     return {
       tasker,
       capacity,
+      // Every account this person has been given, current first - their rows
+      // from the People tab.
+      accounts: assignments.map((a) => ({
+        assignmentId: a.id,
+        accountId: a.account.id,
+        ref: a.account.ref,
+        label: a.account.label,
+        accessType: a.account.accessType,
+        role: a.role,
+        active: a.collectedAt === null,
+        assignedAt: a.assignedAt,
+        collectedAt: a.collectedAt,
+      })),
       totals: {
         submitted: tasks.length,
         closed: tasks.filter((t) => t.state === 'CLOSED').length,
@@ -270,6 +304,44 @@ export class TaskersService {
     });
     // Shown once to whoever invited them; never stored in readable form.
     return { ...user, tempPassword };
+  }
+
+  /**
+   * The accounts given to this tasker right now, and since when. Only what they
+   * need: which account, how they get in, its state. Login details stay behind
+   * the reveal on their task.
+   */
+  async myAccounts(taskerId: string) {
+    const rows = await this.db.accountAssignment.findMany({
+      where: { taskerId, collectedAt: null },
+      orderBy: { assignedAt: 'asc' },
+      include: {
+        account: {
+          select: {
+            id: true,
+            ref: true,
+            label: true,
+            platform: true,
+            accessType: true,
+            state: true,
+            cooldownUntil: true,
+            secret: { select: { fields: true } },
+          },
+        },
+      },
+    });
+    return rows.map((a) => ({
+      accountId: a.account.id,
+      ref: a.account.ref,
+      label: a.account.label,
+      platform: a.account.platform,
+      accessType: a.account.accessType,
+      state: a.account.state,
+      cooldownUntil: a.account.cooldownUntil,
+      hasLoginDetails: (a.account.secret?.fields.length ?? 0) > 0,
+      role: a.role,
+      assignedAt: a.assignedAt,
+    }));
   }
 
   /** A tasker keeping their own contact details current. */

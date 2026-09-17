@@ -7,10 +7,11 @@ import { ChevronDown, FileSpreadsheet, KeyRound, Pencil, Plus, Search, Users, X 
 import { get, post, toApiError } from "@/lib/api";
 import { keys } from "@/lib/query-keys";
 import { AccountBadge } from "@/components/state-badge";
-import { relative, formatWAT } from "@/lib/utils";
+import { relative, formatWAT, formatDayWAT } from "@/lib/utils";
 import { Pagination, usePage } from "@/components/pagination";
 import { AccountPeopleDialog } from "@/components/account-people-dialog";
 import { AccountImportDialog } from "@/components/account-import-dialog";
+import { PeopleTable } from "@/components/people-table";
 import {
   type AccessType,
   type AccountDetails,
@@ -62,6 +63,8 @@ export default function AccountsPage() {
   const [changingState, setChangingState] = React.useState<Account | null>(null);
   const [people, setPeople] = React.useState<Account | null>(null);
   const [importing, setImporting] = React.useState(false);
+  // The sheet's two working tabs: one row per account, or one row per person.
+  const [tab, setTab] = React.useState<"accounts" | "people">("accounts");
 
   // Search as they type, without a request per keystroke.
   React.useEffect(() => {
@@ -112,6 +115,34 @@ export default function AccountsPage() {
         </div>
       </header>
 
+      <div className="flex gap-6 border-b border-ink-200" role="tablist">
+        {(
+          [
+            ["accounts", "Accounts"],
+            ["people", "People"],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => setTab(key)}
+            className={`-mb-px border-b-2 pb-2.5 text-sm ${
+              tab === key
+                ? "border-ink-900 font-semibold text-ink-900"
+                : "border-transparent text-ink-500 hover:text-ink-900"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "people" ? (
+        <PeopleTable />
+      ) : (
+      <>
       {/* The manager's Dashboard tab, and the filters it implies. */}
       {paged?.summary && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" role="group" aria-label="Filter accounts">
@@ -200,6 +231,8 @@ export default function AccountsPage() {
           <Pagination page={paged} onPage={setPage} label="accounts" />
         </div>
       )}
+      </>
+      )}
 
       {editing && (
         <AccountDialog
@@ -285,7 +318,7 @@ function AccountRow({
                 <span className="font-medium text-ink-900">
                   {assigned.map((x) => x.name).join(", ")}
                 </span>
-                {assigned.length === 1 ? `, since ${formatWAT(assigned[0].since)}` : ""}
+                {assigned.length === 1 ? `, assigned ${formatDayWAT(assigned[0].since)}` : ""}
               </>
             ) : (
               <span className="text-warn">No one currently working</span>

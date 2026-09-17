@@ -7,7 +7,7 @@ import { ArrowRight, Briefcase, Clock, Lock, PlayCircle } from "lucide-react";
 import { get } from "@/lib/api";
 import { keys } from "@/lib/query-keys";
 import { StateBadge, type TaskState } from "@/components/state-badge";
-import { untilDue } from "@/lib/utils";
+import { formatDayWAT, untilDue } from "@/lib/utils";
 import { CapacityMeter, type Capacity } from "@/components/capacity-meter";
 import { ActiveTask } from "@/components/active-task";
 
@@ -40,6 +40,13 @@ export default function WorkPage() {
   const { data: onboarding } = useQuery<{ complete: boolean; totalCount: number; completedCount: number }>({
     queryKey: keys.onboarding,
     queryFn: () => get("onboarding"),
+  });
+
+  const { data: myAccounts } = useQuery<
+    { accountId: string; ref: string; label: string | null; platform: string | null; accessType: string; state: string; assignedAt: string; hasLoginDetails: boolean }[]
+  >({
+    queryKey: ["me", "accounts"],
+    queryFn: () => get("me/accounts"),
   });
 
   const [openId, setOpenId] = React.useState<string | null>(null);
@@ -118,6 +125,35 @@ export default function WorkPage() {
       </header>
 
       {capacity && <CapacityMeter capacity={capacity} />}
+
+      <section className="rounded-lg border border-ink-200 px-4 py-3.5">
+        <p className="text-sm font-medium text-ink-900">
+          {myAccounts?.length === 1 ? "Your account" : "Your accounts"}
+        </p>
+        {!myAccounts ? null : myAccounts.length === 0 ? (
+          <p className="mt-0.5 text-sm text-ink-500">
+            No account is assigned to you yet. Your tasks use a shared one until your admin assigns
+            you one.
+          </p>
+        ) : (
+          <ul className="mt-1.5 space-y-1">
+            {myAccounts.map((a) => (
+              <li key={a.accountId} className="flex flex-wrap items-baseline gap-x-2 text-sm">
+                <span className="code font-medium text-ink-900">{a.ref}</span>
+                <span className="text-ink-600">
+                  {[a.platform, a.accessType === "RDP" ? "Remote desktop" : a.accessType === "MORELOGIN" ? "Morelogin" : null]
+                    .filter(Boolean)
+                    .join(", ")}
+                </span>
+                <span className="text-xs text-ink-500">assigned to you {formatDayWAT(a.assignedAt)}</span>
+                {a.state !== "HEALTHY" && (
+                  <span className="text-xs text-warn">not usable right now</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {!tasks?.length ? (
         <div className="rounded-lg border border-dashed border-ink-200 px-6 py-12 text-center">

@@ -77,3 +77,16 @@ export function untilDue(value?: string | Date | null): { text: string; overdue:
   const text = mins < 60 ? `${mins}m` : `${Math.round(mins / 60)}h`;
   return diff < 0 ? { text: `${text} overdue`, overdue: true } : { text: `Due in ${text}`, overdue: false };
 }
+
+/** A date the way the Account Tracker sheet shows one: "16 Sept 2026", in WAT. */
+export function formatDayWAT(value?: string | Date | null): string {
+  if (!value) return "-";
+  const d = typeof value === "string" ? new Date(value) : value;
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleDateString("en-GB", {
+    timeZone: WAT,
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
