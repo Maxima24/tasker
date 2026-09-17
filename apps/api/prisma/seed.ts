@@ -1,0 +1,738 @@
+/**
+ * Demo seed. Builds an operation mid-flight: work in every queue, a tasker
+ * holding an account right now, history behind the productivity scores, and
+ * one task parked in rework so the interrupting-rework path is visible.
+ *
+ * Run: pnpm --filter @tasker/api seed
+ */
+import { PrismaClient, TaskState, Channel } from '@prisma/client';
+import * as bcrypt from 'bcryptjs';
+import crypto from 'node:crypto';
+import zlib from 'node:zlib';
+import fs from 'node:fs';
+import path from 'node:path';
+import { encryptCredential } from '../src/vault/crypto';
+
+const db = new PrismaClient();
+const SECRET = process.env.VAULT_KEY_SECRET || 'dev-tasker-vault-key-change-me';
+const UPLOAD_DIR = path.resolve(process.cwd(), 'uploads');
+
+async function main() {
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEMO_SEED !== 'yes') {
+    throw new Error(
+      'The demo seed deletes every row before it runs. Refusing on a production database. ' +
+        'Set ALLOW_DEMO_SEED=yes only if that is really what you want.',
+    );
+  }
+  console.log('resetting...');
+  // Order matters: children first.
+  await db.ticketMessage.deleteMany();
+  await db.ticket.deleteMany();
+  await db.taskEvent.deleteMany();
+  await db.review.deleteMany();
+  await db.proof.deleteMany();
+  await db.taskOffer.deleteMany();
+  await db.accountHold.deleteMany();
+  await db.credentialReveal.deleteMany();
+  await db.task.deleteMany();
+  await db.certification.deleteMany();
+  await db.quizAttempt.deleteMany();
+  await db.tutorialProgress.deleteMany();
+  await db.workRequest.deleteMany();
+  await db.taskerStats.deleteMany();
+  await db.incident.deleteMany();
+  await db.telegramLinkNonce.deleteMany();
+  await db.pushSubscription.deleteMany();
+  await db.accountSecret.deleteMany();
+  await db.account.deleteMany();
+  await db.specVersion.deleteMany();
+  await db.taskType.deleteMany();
+  await db.tutorial.deleteMany(); // includes the onboarding series
+  await db.quiz.deleteMany();
+  await db.user.deleteMany();
+
+  // Invariant 3 lives in the database. Create it here so a fresh `db push`
+  // never leaves account exclusivity depending on application logic.
+  await db.$executeRawUnsafe(`
+    CREATE UNIQUE INDEX IF NOT EXISTS account_hold_one_open
+      ON "AccountHold" ("accountId") WHERE "releasedAt" IS NULL;
+  `);
+
+  // A submitted task without a submission time is unrepresentable, not just
+  // unlikely. The value only ever comes from the server clock.
+  await db.$executeRawUnsafe(`
+    ALTER TABLE "Task" DROP CONSTRAINT IF EXISTS task_submitted_has_timestamp;
+  `);
+  await db.$executeRawUnsafe(`
+    ALTER TABLE "Task" ADD CONSTRAINT task_submitted_has_timestamp CHECK (
+      "state" NOT IN ('SUBMITTED', 'IN_REVIEW', 'PENDING_VERIFICATION', 'REWORK', 'CLOSED')
+      OR "submittedAt" IS NOT NULL
+    );
+  `);
+
+  const password = await bcrypt.hash('password', 10);
+
+  console.log('users...');
+  const admin = await db.user.create({
+    data: {
+      name: 'Amina Bello',
+      preferredName: 'Amina',
+      phone: '+234 809 111 2233',
+      email: 'admin@tasker.dev',
+      role: 'ADMIN',
+      passwordHash: password,
+    },
+  });
+  const subAdmin = await db.user.create({
+    data: {
+      name: 'Tunde Okafor',
+      preferredName: 'Tunde',
+      phone: '+234 806 444 5566',
+      email: 'sub@tasker.dev',
+      role: 'SUB_ADMIN',
+      passwordHash: password,
+    },
+  });
+
+  const taskerSeed = [
+    { name: 'Chidi Nwosu', preferred: 'Chidi', phone: '+234 801 234 5671', email: 'chidi@tasker.dev', closed: 18, approval: 0.94, median: 95, rework: 0.06 },
+    { name: 'Funke Adeyemi', preferred: 'Funke', phone: '+234 802 345 6782', email: 'funke@tasker.dev', closed: 12, approval: 0.88, median: 140, rework: 0.12 },
+    { name: 'Emeka Obi', preferred: 'Emeka', phone: '+234 803 456 7893', email: 'emeka@tasker.dev', closed: 9, approval: 0.77, median: 65, rework: 0.25 },
+    { name: 'Zainab Yusuf', preferred: 'Zainab', phone: '+234 805 567 8904', email: 'zainab@tasker.dev', closed: 7, approval: 0.91, median: 180, rework: 0.08 },
+    // Deliberately under the ranking floor: shown separately, never starved.
+    { name: 'Ibrahim Sani', preferred: 'Ibrahim', phone: '+234 807 678 9015', email: 'ibrahim@tasker.dev', closed: 2, approval: 1.0, median: 110, rework: 0 },
+  ];
+
+  const taskers: { id: string; name: string }[] = [];
+  for (const t of taskerSeed) {
+    const user = await db.user.create({
+      data: {
+        name: t.name,
+        preferredName: t.preferred,
+        phone: t.phone,
+        email: t.email,
+        role: 'TASKER',
+        passwordHash: password,
+      },
+    });
+    const closedNorm = Math.min(t.closed / 20, 1);
+    const speedNorm = Math.max(0, 1 - t.median / 480);
+    const score = 0.4 * t.approval + 0.2 * closedNorm + 0.2 * speedNorm + 0.2 * (1 - t.rework);
+    await db.taskerStats.create({
+      data: {
+        taskerId: user.id,
+        approvalRate: t.approval,
+        closedCount: t.closed,
+        medianSubmitMinutes: t.median,
+        reworkRate: t.rework,
+        score: Number(score.toFixed(4)),
+      },
+    });
+    taskers.push(user);
+  }
+
+  console.log('onboarding series...');
+  // The platform gate. Watched in order, before any task can be claimed.
+  const onboarding: { id: string; durationSeconds: number }[] = [];
+  const onboardingSeed = [
+    {
+      title: 'Welcome and ground rules',
+      description: 'What this operation does, what is expected of you, and what gets you removed.',
+    },
+    {
+      title: 'Working an account safely',
+      description: 'How accounts are shared, what a challenge looks like, and what to do the moment one appears.',
+    },
+    {
+      title: 'Evidence that counts',
+      description: 'What a usable screenshot looks like, and why proof is captured as you work rather than assembled after.',
+    },
+  ];
+  for (const [i, v] of onboardingSeed.entries()) {
+    onboarding.push(
+      await db.tutorial.create({
+        data: {
+          kind: 'ONBOARDING',
+          order: i + 1,
+          title: v.title,
+          description: v.description,
+          videoUrl: 'https://cdn.jsdelivr.net/gh/mediaelement/mediaelement-files/big_buck_bunny.mp4',
+          durationSeconds: 60,
+        },
+      }),
+    );
+  }
+
+  console.log('accounts...');
+  const accounts: { id: string; ref: string }[] = [];
+  // What an admin actually loads: the platform, where to sign in, the login
+  // itself, and a line of instructions. Two arrived from Telegram, the rest
+  // from the console, so both "added via" labels show up in the demo.
+  const pool = [
+    {
+      ref: 'ACC-001',
+      label: 'Lagos listings',
+      platform: 'Upwork',
+      loginUrl: 'https://www.upwork.com/ab/account-security/login',
+      notes: 'Sign in from the Lagos proxy only. If it asks for a code, raise a ticket - do not request a new one.',
+      login: { username: 'ops.acc001', email: 'ops.acc001@mail.dev', password: 'pw-ACC-001-x9f2', twoFactor: '4821 9930 1177 6604' },
+      via: 'WEB' as const,
+    },
+    {
+      ref: 'ACC-002',
+      label: 'Outreach desk',
+      platform: 'LinkedIn',
+      loginUrl: 'https://www.linkedin.com/login',
+      notes: 'Keep connection requests under 40 a day. Never change the profile photo or headline.',
+      login: { email: 'ops.acc002@mail.dev', password: 'pw-ACC-002-x9f2', recoveryEmail: 'recovery.acc002@mail.dev' },
+      via: 'TELEGRAM' as const,
+    },
+    {
+      ref: 'ACC-003',
+      label: 'Marketplace seller',
+      platform: 'Fiverr',
+      loginUrl: 'https://www.fiverr.com/login',
+      notes: 'Reply to buyers in English only. Do not accept custom offers.',
+      login: { username: 'acc003seller', email: 'ops.acc003@mail.dev', password: 'pw-ACC-003-x9f2' },
+      via: 'WEB' as const,
+    },
+    {
+      ref: 'ACC-004',
+      label: 'Reviews queue',
+      platform: 'Google Business',
+      loginUrl: 'https://business.google.com',
+      notes: null,
+      login: { email: 'ops.acc004@mail.dev', password: 'pw-ACC-004-x9f2', phone: '+234 803 000 0004' },
+      via: 'TELEGRAM' as const,
+    },
+    {
+      ref: 'ACC-005',
+      label: 'Spare',
+      platform: 'Upwork',
+      loginUrl: 'https://www.upwork.com/ab/account-security/login',
+      notes: 'Resting after a verification check. Leave it alone until the cooldown ends.',
+      login: { username: 'ops.acc005', email: 'ops.acc005@mail.dev', password: 'pw-ACC-005-x9f2' },
+      via: 'WEB' as const,
+    },
+  ];
+  for (const [i, a] of pool.entries()) {
+    const { ciphertext, keyVersion } = encryptCredential(JSON.stringify(a.login), SECRET);
+    const fields = ['username', 'email', 'password', 'phone', 'twoFactor', 'recoveryEmail', 'extra'].filter(
+      (k) => (a.login as Record<string, string | undefined>)[k],
+    );
+    accounts.push(
+      await db.account.create({
+        data: {
+          ref: a.ref,
+          label: a.label,
+          platform: a.platform,
+          loginUrl: a.loginUrl,
+          notes: a.notes,
+          addedById: a.via === 'TELEGRAM' ? admin.id : subAdmin.id,
+          addedVia: a.via,
+          state: i === 4 ? 'COOLDOWN' : 'HEALTHY',
+          cooldownUntil: i === 4 ? new Date(Date.now() + 6 * 3_600_000) : null,
+          secret: { create: { ciphertext, keyVersion, fields } },
+        },
+      }),
+    );
+  }
+
+  console.log('task types + specs...');
+  const outreach = await db.taskType.create({
+    data: { name: 'Outreach batch', category: 'STANDARD', createdById: admin.id },
+  });
+  const listing = await db.taskType.create({
+    data: { name: 'Listing verification', category: 'CRITICAL', createdById: admin.id },
+  });
+  // Deliberately incomplete: proves the spec-completeness gate at intake.
+  const draftType = await db.taskType.create({
+    data: { name: 'Profile cleanup', category: 'STANDARD', createdById: admin.id },
+  });
+
+  const outreachSpec = await publishSpec(outreach.id, 1, [
+    { key: 'inbox', label: 'Inbox before starting', requiresProof: true },
+    { key: 'sent', label: 'Sent folder after the batch', requiresProof: true },
+    { key: 'tally', label: 'Message tally recorded', requiresProof: false },
+  ], {
+    title: 'How to run an outreach batch',
+    videoUrl: 'https://cdn.jsdelivr.net/gh/mediaelement/mediaelement-files/big_buck_bunny.mp4',
+    durationSeconds: 60,
+  }, [
+    q('o1', 'How many messages per batch?', ['10', '25', '50'], 1),
+    q('o2', 'What do you capture before starting?', ['Nothing', 'The inbox', 'Your screen'], 1),
+    q('o3', 'When is a batch complete?', ['When time runs out', 'When the tally matches', 'When you feel done'], 1),
+  ]);
+
+  const listingSpecV1 = await publishSpec(listing.id, 1, [
+    { key: 'listing', label: 'Listing page as found', requiresProof: true },
+    { key: 'edits', label: 'Fields corrected', requiresProof: true },
+    { key: 'confirm', label: 'Platform confirmation screen', requiresProof: true },
+  ], {
+    title: 'Verifying a listing, end to end',
+    videoUrl: 'https://cdn.jsdelivr.net/gh/mediaelement/mediaelement-files/big_buck_bunny.mp4',
+    durationSeconds: 60,
+  }, [
+    q('l1', 'Which field is checked first?', ['Price', 'Address', 'Photos'], 1),
+    q('l2', 'A mismatched address means:', ['Fix silently', 'Flag and correct', 'Skip the listing'], 1),
+    q('l3', 'Proof of confirmation is:', ['Optional', 'The platform screen', 'Your word'], 1),
+  ]);
+
+  console.log('onboarding progress...');
+  for (const t of taskers.slice(0, 4)) {
+    for (const v of onboarding) {
+      await db.tutorialProgress.create({
+        data: { taskerId: t.id, tutorialId: v.id, furthestSeconds: v.durationSeconds, completed: true },
+      });
+    }
+  }
+  // Ibrahim is brand new: first video watched, the other two still ahead of him,
+  // so the onboarding wall is visible in the demo.
+  await db.tutorialProgress.create({
+    data: {
+      taskerId: taskers[4].id,
+      tutorialId: onboarding[0].id,
+      furthestSeconds: onboarding[0].durationSeconds,
+      completed: true,
+    },
+  });
+
+  console.log('certifications...');
+  // Everyone but Ibrahim is certified on outreach; three on listing.
+  for (const t of taskers.slice(0, 4)) {
+    await certify(t.id, outreach.id, outreachSpec.id);
+  }
+  // Chidi and Funke only - Zainab and Emeka have to watch the listing tutorial
+  // from the queue, which is how the per-task gate gets demonstrated.
+  for (const t of taskers.slice(0, 2)) {
+    await certify(t.id, listing.id, listingSpecV1.id);
+  }
+
+  console.log('tasks...');
+  await fs.promises.mkdir(UPLOAD_DIR, { recursive: true });
+
+  // 1. Closed history, so the scores above have something behind them.
+  for (let i = 0; i < 6; i++) {
+    const tasker = taskers[i % 3];
+    await makeTask({
+      type: outreach,
+      spec: outreachSpec,
+      state: 'CLOSED',
+      assignee: tasker,
+      account: accounts[0],
+      hoursReported: 3 + (i % 3),
+      daysAgo: 7 - i,
+      acceptedMinutesAgo: 60 * 24 * (7 - i) + 240,
+      submittedMinutesAgo: 60 * 24 * (7 - i),
+      closed: true,
+    });
+  }
+
+  // 2. Waiting for an assigner - the top group on the board must not be empty,
+  // because dispatching work is the first thing the demo shows.
+  await makeTask({ type: listing, spec: listingSpecV1, state: 'DRAFT', dueInHours: 6 });
+
+  // 3. The queue. Self-serve: every open task is visible to every onboarded
+  // tasker, and a mix of both types means some rows are claimable immediately
+  // while others need that task's tutorial watched first.
+  for (const [i, spec] of [
+    { type: outreach, spec: outreachSpec, hours: 8 },
+    { type: listing, spec: listingSpecV1, hours: 6 },
+    { type: outreach, spec: outreachSpec, hours: 12 },
+    { type: listing, spec: listingSpecV1, hours: 4 },
+    { type: outreach, spec: outreachSpec, hours: 24 },
+  ].entries()) {
+    await makeTask({
+      type: spec.type,
+      spec: spec.spec,
+      state: 'OPEN',
+      dueInHours: spec.hours,
+    });
+  }
+
+  // 4. Directly assigned, not yet accepted.
+  const assigned = await makeTask({
+    type: listing,
+    spec: listingSpecV1,
+    state: 'ASSIGNED',
+    assignee: taskers[1],
+    dueInHours: 5,
+  });
+  await db.taskOffer.create({ data: { taskId: assigned.id, taskerId: taskers[1].id } });
+
+  // 5. In progress right now, holding ACC-002.
+  const inProgress = await makeTask({
+    type: listing,
+    spec: listingSpecV1,
+    state: 'IN_PROGRESS',
+    assignee: taskers[0],
+    account: accounts[1],
+    acceptedMinutesAgo: 40,
+    dueInHours: 3,
+    hold: true,
+  });
+  await addProof(inProgress.id, 'listing');
+
+  // 6. Awaiting internal review, proof complete.
+  const inReview = await makeTask({
+    type: listing,
+    spec: listingSpecV1,
+    state: 'IN_REVIEW',
+    assignee: taskers[2],
+    account: accounts[2],
+    acceptedMinutesAgo: 180,
+    submittedMinutesAgo: 25,
+  });
+  for (const key of ['listing', 'edits', 'confirm']) await addProof(inReview.id, key);
+
+  // 7. Awaiting an external verdict, internal review already passed.
+  const pendingVerification = await makeTask({
+    type: listing,
+    spec: listingSpecV1,
+    state: 'PENDING_VERIFICATION',
+    assignee: taskers[1],
+    account: accounts[3],
+    acceptedMinutesAgo: 400,
+    submittedMinutesAgo: 190,
+  });
+  for (const key of ['listing', 'edits', 'confirm']) await addProof(pendingVerification.id, key);
+  await db.review.create({
+    data: {
+      taskId: pendingVerification.id,
+      stage: 'INTERNAL',
+      outcome: 'PASS',
+      actorId: subAdmin.id,
+      onBehalfOfId: admin.id,
+      channel: 'TELEGRAM',
+      note: 'Fields match the source. Confirmation screen is legible.',
+    },
+  });
+
+  // 8. A standard submission with flagged hours - closes anyway, flag visible.
+  const flagged = await makeTask({
+    type: outreach,
+    spec: outreachSpec,
+    state: 'CLOSED',
+    assignee: taskers[3],
+    account: accounts[0],
+    acceptedMinutesAgo: 90,
+    submittedMinutesAgo: 5,
+    hoursReported: 6,
+    closed: true,
+  });
+  await db.task.update({
+    where: { id: flagged.id },
+    data: {
+      hoursFlagged: true,
+      hoursFlagReason: 'Reported 6h but only 1.4h elapsed since acceptance.',
+    },
+  });
+
+  // 9. Emeka's record: enough reviewed work to be measured, and a pass rate
+  // under the 75% floor, so the earned-capacity penalty is demonstrable.
+  for (let i = 0; i < 5; i++) {
+    const failed = i < 2;
+    const t = await makeTask({
+      type: listing,
+      spec: listingSpecV1,
+      state: 'CLOSED',
+      assignee: taskers[2],
+      account: accounts[2],
+      daysAgo: 12 - i,
+      acceptedMinutesAgo: 600,
+      submittedMinutesAgo: 400,
+      closed: true,
+    });
+    if (failed) {
+      // A task that needed a second attempt is not the same as one that passed
+      // first time - the capacity rule counts only tasks nothing ever failed.
+      await db.review.create({
+        data: {
+          taskId: t.id,
+          stage: 'INTERNAL',
+          outcome: 'FAIL',
+          actorId: subAdmin.id,
+          channel: 'WEB',
+          reason: 'Confirmation screen was unreadable.',
+        },
+      });
+      await db.task.update({ where: { id: t.id }, data: { reworkCount: 1 } });
+    }
+    await db.review.create({
+      data: {
+        taskId: t.id,
+        stage: failed ? 'INTERNAL' : 'EXTERNAL',
+        outcome: 'PASS',
+        actorId: subAdmin.id,
+        channel: 'WEB',
+      },
+    });
+  }
+
+  // 10. An open work request, so the assignment board has something to answer.
+  await db.workRequest.create({ data: { taskerId: taskers[3].id } });
+
+  console.log('tickets...');
+  // One of each state, so the queue is not an empty page on arrival.
+  await db.ticket.create({
+    data: {
+      code: 'TKT-101',
+      taskerId: taskers[0].id,
+      taskId: inProgress.id,
+      accountId: accounts[1].id,
+      category: 'ACCOUNT_BLOCKED',
+      priority: 'URGENT',
+      subject: 'Account wants a code I cannot receive',
+      body:
+        'Signed in fine, but on the second page it asks for a 6-digit code sent to a phone ' +
+        'number I do not have access to. I have tried twice and it is now warning me about ' +
+        'too many attempts, so I have stopped rather than lock it out.',
+      createdAt: new Date(Date.now() - 22 * 60_000),
+      lastAlertedAt: new Date(Date.now() - 12 * 60_000),
+      alertCount: 2,
+    },
+  });
+
+  const claimedTicket = await db.ticket.create({
+    data: {
+      code: 'TKT-102',
+      taskerId: taskers[2].id,
+      category: 'TASK_UNCLEAR',
+      priority: 'NORMAL',
+      subject: 'Step 2 does not match what I am seeing',
+      body:
+        'The checklist says to correct the address field, but the listing I have does not ' +
+        'show an address field at all. Should I skip it, or is this the wrong kind of listing?',
+      status: 'CLAIMED',
+      claimedById: subAdmin.id,
+      claimedAt: new Date(Date.now() - 40 * 60_000),
+      createdAt: new Date(Date.now() - 95 * 60_000),
+      alertCount: 1,
+    },
+  });
+  await db.ticketMessage.create({
+    data: {
+      ticketId: claimedTicket.id,
+      authorId: subAdmin.id,
+      body: 'Looking now. Skip that step and carry on with the rest, I will confirm shortly.',
+      createdAt: new Date(Date.now() - 35 * 60_000),
+    },
+  });
+
+  await db.ticket.create({
+    data: {
+      code: 'TKT-100',
+      taskerId: taskers[1].id,
+      accountId: accounts[4].id,
+      category: 'CREDENTIALS_WRONG',
+      priority: 'NORMAL',
+      subject: 'Password rejected on ACC-005',
+      body: 'The password copies across fine but the platform says it is wrong.',
+      status: 'RESOLVED',
+      claimedById: subAdmin.id,
+      claimedAt: new Date(Date.now() - 3 * 3_600_000),
+      resolvedAt: new Date(Date.now() - 2.5 * 3_600_000),
+      resolution:
+        'Password had been rotated on the platform but not updated here. Updated the vault ' +
+        'entry and put ACC-005 into cooldown for the rest of the day.',
+      createdAt: new Date(Date.now() - 4 * 3_600_000),
+      alertCount: 1,
+    },
+  });
+
+  console.log('\nseeded.');
+  console.log('  admin      admin@tasker.dev / password');
+  console.log('  sub-admin  sub@tasker.dev   / password');
+  console.log('  taskers    chidi|funke|emeka|zainab|ibrahim @tasker.dev / password');
+
+  // ---- helpers ----------------------------------------------------
+
+  function q(id: string, question: string, options: string[], correctIndex: number) {
+    return { id, question, options, correctIndex };
+  }
+
+  async function publishSpec(
+    taskTypeId: string,
+    version: number,
+    checklist: any[],
+    tutorial: { title: string; videoUrl: string; durationSeconds: number },
+    questions: any[],
+  ) {
+    const tut = await db.tutorial.create({ data: tutorial });
+    const quiz = await db.quiz.create({ data: { questionsJson: questions, passPercent: 70 } });
+    const spec = await db.specVersion.create({
+      data: {
+        taskTypeId,
+        version,
+        checklist,
+        tutorialId: tut.id,
+        quizId: quiz.id,
+        publishedAt: new Date(),
+      },
+    });
+    await db.taskType.update({
+      where: { id: taskTypeId },
+      data: { currentSpecVersionId: spec.id, status: 'active' },
+    });
+    return spec;
+  }
+
+  async function certify(taskerId: string, taskTypeId: string, specVersionId: string) {
+    const spec = await db.specVersion.findUniqueOrThrow({ where: { id: specVersionId } });
+    if (spec.tutorialId) {
+      const tut = await db.tutorial.findUniqueOrThrow({ where: { id: spec.tutorialId } });
+      await db.tutorialProgress.create({
+        data: {
+          taskerId,
+          tutorialId: tut.id,
+          furthestSeconds: tut.durationSeconds,
+          completed: true,
+        },
+      });
+    }
+    await db.certification.create({ data: { taskerId, taskTypeId, specVersionId } });
+  }
+
+  async function makeTask(opts: {
+    type: { id: string; category: any };
+    spec: { id: string };
+    state: TaskState;
+    assignee?: { id: string };
+    account?: { id: string };
+    hoursReported?: number;
+    dueInHours?: number;
+    daysAgo?: number;
+    acceptedMinutesAgo?: number;
+    submittedMinutesAgo?: number;
+    hold?: boolean;
+    closed?: boolean;
+  }) {
+    const count = await db.task.count();
+    const now = Date.now();
+    const task = await db.task.create({
+      data: {
+        code: `TSK-${4001 + count}`,
+        taskTypeId: opts.type.id,
+        specVersionId: opts.spec.id,
+        category: opts.type.category,
+        state: opts.state,
+        assigneeId: opts.assignee?.id,
+        accountId: opts.account?.id,
+        createdById: admin.id,
+        createdVia: 'TELEGRAM' as Channel,
+        dueAt: opts.dueInHours ? new Date(now + opts.dueInHours * 3_600_000) : null,
+        acceptedAt: opts.acceptedMinutesAgo ? new Date(now - opts.acceptedMinutesAgo * 60_000) : null,
+        submittedAt: opts.submittedMinutesAgo
+          ? new Date(now - opts.submittedMinutesAgo * 60_000)
+          : null,
+        hoursReported: opts.hoursReported ?? null,
+        createdAt: opts.daysAgo ? new Date(now - opts.daysAgo * 86_400_000) : new Date(),
+      },
+    });
+
+    await db.taskEvent.create({
+      data: { taskId: task.id, toState: 'DRAFT', actorId: admin.id, channel: 'TELEGRAM' },
+    });
+    await db.taskEvent.create({
+      data: { taskId: task.id, fromState: 'DRAFT', toState: opts.state, actorId: admin.id, channel: 'TELEGRAM' },
+    });
+
+    if (opts.hold && opts.account && opts.assignee) {
+      await db.accountHold.create({
+        data: { accountId: opts.account.id, taskId: task.id, taskerId: opts.assignee.id },
+      });
+    }
+    return task;
+  }
+
+  async function addProof(taskId: string, checklistKey: string) {
+    const buffer = pngPlaceholder(checklistKey);
+    const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+    const dir = path.join(UPLOAD_DIR, taskId);
+    await fs.promises.mkdir(dir, { recursive: true });
+    const storageKey = `${taskId}/${checklistKey}-${sha256.slice(0, 12)}.png`;
+    await fs.promises.writeFile(path.join(UPLOAD_DIR, storageKey), buffer);
+    await db.proof.create({
+      data: {
+        taskId,
+        checklistKey,
+        storageKey,
+        sha256,
+        phash: sha256.slice(0, 16),
+        byteSize: buffer.length,
+        mimeType: 'image/png',
+      },
+    });
+  }
+}
+
+/**
+ * A real PNG, generated rather than shipped: proof frames must render in the
+ * console AND be sendable as Telegram photos, which rules out SVG.
+ * Solid colour derived from the slot key, so the three frames are distinct.
+ */
+function pngPlaceholder(seed: string): Buffer {
+  const width = 480;
+  const height = 300;
+  const hash = [...seed].reduce((a, c) => a + c.charCodeAt(0) * 37, 0);
+  const rgb = [180 + (hash % 60), 190 + (hash % 50), 210 + (hash % 40)];
+
+  // One filter byte per scanline, then RGB triples.
+  const stride = width * 3 + 1;
+  const raw = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * stride] = 0;
+    for (let x = 0; x < width; x++) {
+      const o = y * stride + 1 + x * 3;
+      // A diagonal band so a reviewer can tell two frames apart at a glance.
+      const band = (x + y) % 120 < 8 ? 40 : 0;
+      raw[o] = Math.max(0, rgb[0] - band);
+      raw[o + 1] = Math.max(0, rgb[1] - band);
+      raw[o + 2] = Math.max(0, rgb[2] - band);
+    }
+  }
+
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;  // bit depth
+  ihdr[9] = 2;  // colour type: truecolour
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body), 0);
+  return Buffer.concat([len, body, crc]);
+}
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(() => db.$disconnect());

@@ -1,0 +1,16 @@
+{
+  "name": "tasker",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev:api": "pnpm --filter @tasker/api start:dev",
+    "dev:web": "pnpm --filter @tasker/web dev",
+    "db:up": "docker compose -f infrastructure/docker-compose.dev.yml up -d",
+    "db:down": "docker compose -f infrastructure/docker-compose.dev.yml down",
+    "db:migrate": "pnpm --filter @tasker/api prisma:deploy",
+    "db:seed": "pnpm --filter @tasker/api seed",
+    "build": "pnpm --filter @tasker/api build && pnpm --filter @tasker/web build"
+  }
+}

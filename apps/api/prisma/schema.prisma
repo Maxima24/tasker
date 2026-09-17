@@ -1,0 +1,552 @@
+// Tasker orchestrator schema - PRD section 18.
+// The orchestrator is the only writer. Every surface is a client of it.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  SUB_ADMIN
+  TASKER
+}
+enum TaskCategory {
+  STANDARD
+  CRITICAL
+}
+
+enum TaskState {
+  DRAFT
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  SUBMITTED
+  IN_REVIEW
+  PENDING_VERIFICATION
+  REWORK
+  PAUSED
+  CLOSED
+  CANCELLED
+  EXPIRED
+}
+
+enum AccountState {
+  HEALTHY
+  COOLDOWN
+  CHALLENGED
+  SUSPENDED
+  RETIRED
+}
+enum Channel {
+  WEB
+  TELEGRAM
+  SYSTEM
+}
+enum ReviewStage {
+  INTERNAL
+  EXTERNAL
+}
+enum ReviewOutcome {
+  PASS
+  FAIL
+}
+
+// Onboarding videos are watched before ANY task can be claimed; task tutorials
+// are watched before that specific task can be claimed.
+enum TutorialKind {
+  ONBOARDING
+  TASK
+}
+
+// Section 10 - the tasker picks the cause from a fixed list; a sub-admin confirms it.
+// Only TASKER_FAULT carries a consequence, and only a human can set it.
+// A ticket is how a tasker says "something is wrong and I cannot continue".
+enum TicketStatus {
+  OPEN
+  CLAIMED
+  RESOLVED
+}
+
+enum TicketCategory {
+  ACCOUNT_BLOCKED
+  CREDENTIALS_WRONG
+  TASK_UNCLEAR
+  PLATFORM_ISSUE
+  OTHER
+}
+
+enum TicketPriority {
+  NORMAL
+  URGENT
+}
+
+enum AccountIssueCause {
+  ROUTINE_CHALLENGE
+  ACCESS_CHANGED
+  PRE_FLAGGED
+  TASKER_FAULT
+}
+
+model User {
+  id             String   @id @default(cuid())
+  role           Role
+  name           String
+  // What they are called across the app. Falls back to name when unset.
+  preferredName  String?
+  phone          String?
+  email          String   @unique
+  passwordHash   String?
+  // Set when somebody else chose the password (an invite, the first admin).
+  // Until they pick their own, the API answers nothing but the change itself.
+  mustChangePassword Boolean @default(false)
+  telegramUserId BigInt?  @unique
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+
+  tasks            Task[]              @relation("assignee")
+  certifications   Certification[]
+  stats            TaskerStats?
+  offers           TaskOffer[]
+  holds            AccountHold[]
+  workRequests     WorkRequest[]
+  tutorialProgress TutorialProgress[]
+  quizAttempts     QuizAttempt[]
+  incidents        Incident[]
+  linkNonces       TelegramLinkNonce[]
+  tickets          Ticket[]            @relation("raisedBy")
+  claimedTickets   Ticket[]            @relation("claimedBy")
+  ticketMessages   TicketMessage[]
+  accountsAdded    Account[]           @relation("accountAddedBy")
+  pushDevices      PushSubscription[]
+}
+
+model TaskType {
+  id                   String       @id @default(cuid())
+  name                 String       @unique
+  category             TaskCategory
+  status               String       @default("draft") // draft | active | retired
+  currentSpecVersionId String?
+  createdById          String
+  createdAt            DateTime     @default(now())
+
+  specVersions SpecVersion[]
+  tasks        Task[]
+}
+
+model SpecVersion {
+  id          String    @id @default(cuid())
+  taskTypeId  String
+  version     Int
+  checklist   Json // ordered [{ key, label, requiresProof }]
+  tutorialId  String?   @unique
+  quizId      String?   @unique
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  taskType       TaskType        @relation(fields: [taskTypeId], references: [id], onDelete: Cascade)
+  tutorial       Tutorial?       @relation(fields: [tutorialId], references: [id])
+  quiz           Quiz?           @relation(fields: [quizId], references: [id])
+  tasks          Task[]
+  certifications Certification[]
+
+  @@unique([taskTypeId, version])
+}
+
+// Section 9 - tutorials live on the website because playback progress is trackable there.
+model Tutorial {
+  id              String       @id @default(cuid())
+  kind            TutorialKind @default(TASK)
+  // Where the file actually lives. "cloudinary" carries a publicId for
+  // transcoding and adaptive bitrate; "local" is served by the API.
+  provider        String       @default("local")
+  storageRef      String?
+  // ONBOARDING only: the order they must be watched in.
+  order           Int?
+  title           String
+  description     String?
+  videoUrl        String
+  durationSeconds Int
+  createdAt       DateTime     @default(now())
+
+  specVersion SpecVersion?
+  progress    TutorialProgress[]
+}
+
+// Furthest position reached, NOT cumulative seconds: seeking and repeat sessions
+// inflate a running total, so a watermark is the only honest completion signal.
+model TutorialProgress {
+  id              String   @id @default(cuid())
+  taskerId        String
+  tutorialId      String
+  furthestSeconds Int      @default(0)
+  completed       Boolean  @default(false)
+  lastHeartbeat   DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tasker   User     @relation(fields: [taskerId], references: [id], onDelete: Cascade)
+  tutorial Tutorial @relation(fields: [tutorialId], references: [id], onDelete: Cascade)
+
+  @@unique([taskerId, tutorialId])
+}
+
+model Quiz {
+  id            String   @id @default(cuid())
+  questionsJson Json // [{ id, question, options[], correctIndex }]
+  passPercent   Int      @default(70)
+  createdAt     DateTime @default(now())
+
+  specVersion SpecVersion?
+  attempts    QuizAttempt[]
+}
+
+model QuizAttempt {
+  id           String   @id @default(cuid())
+  taskerId     String
+  quizId       String
+  answersJson  Json
+  scorePercent Float
+  passed       Boolean
+  createdAt    DateTime @default(now())
+
+  tasker User @relation(fields: [taskerId], references: [id], onDelete: Cascade)
+  quiz   Quiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
+
+  @@index([taskerId, createdAt])
+}
+
+// Certification is per SPEC VERSION, never per task type - that is the whole
+// point of section 9. Publishing a new version supersedes every certification below it.
+model Certification {
+  id            String    @id @default(cuid())
+  taskerId      String
+  taskTypeId    String
+  specVersionId String
+  certifiedAt   DateTime  @default(now())
+  supersededAt  DateTime?
+
+  tasker      User        @relation(fields: [taskerId], references: [id], onDelete: Cascade)
+  specVersion SpecVersion @relation(fields: [specVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([taskerId, specVersionId])
+  @@index([taskerId, taskTypeId, supersededAt])
+}
+
+model Account {
+  id            String       @id @default(cuid())
+  ref           String       @unique
+  label         String?
+  // What a tasker sees before revealing anything. None of it is secret: which
+  // platform, where to sign in, and the instructions the admin left for them.
+  platform      String?
+  loginUrl      String?
+  notes         String?
+  state         AccountState @default(HEALTHY)
+  cooldownUntil DateTime?
+  // Who put these details in, and from which surface - the bot or the console.
+  addedById     String?
+  addedVia      Channel      @default(WEB)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @default(now()) @updatedAt
+
+  addedBy User?          @relation("accountAddedBy", fields: [addedById], references: [id])
+  secret  AccountSecret?
+  holds   AccountHold[]
+  reveals CredentialReveal[]
+  tasks   Task[]
+  tickets Ticket[]
+}
+
+model AccountSecret {
+  id         String   @id @default(cuid())
+  accountId  String   @unique
+  ciphertext String // AES-256-GCM, packed iv:tag:ciphertext, of a JSON object of login fields
+  keyVersion Int      @default(1)
+  // WHICH fields are stored (username, password, ...), never their values. Lets
+  // a card show what is there before anyone reveals it.
+  fields     String[] @default([])
+  updatedAt  DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+model AccountHold {
+  id         String    @id @default(cuid())
+  accountId  String
+  taskId     String
+  taskerId   String
+  heldAt     DateTime  @default(now())
+  releasedAt DateTime?
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  task    Task    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tasker  User    @relation(fields: [taskerId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, releasedAt])
+  // Exclusivity is a partial unique index - (accountId) WHERE released_at IS NULL -
+  // created in prisma/bootstrap.sql. Application logic must never be the guard.
+}
+
+model CredentialReveal {
+  id         String   @id @default(cuid())
+  accountId  String
+  taskId     String?
+  actorId    String
+  revealedAt DateTime @default(now())
+  ip         String?
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, revealedAt])
+}
+
+model Task {
+  id              String       @id @default(cuid())
+  code            String       @unique // TSK-4471
+  taskTypeId      String
+  specVersionId   String
+  category        TaskCategory
+  state           TaskState    @default(DRAFT)
+  version         Int          @default(0) // optimistic concurrency + stale callbacks
+  accountId       String?
+  assigneeId      String?
+  createdById     String
+  createdVia      Channel
+  dueAt           DateTime?
+  acceptedAt      DateTime?
+  submittedAt     DateTime?
+  hoursReported   Decimal?
+  hoursFlagged    Boolean      @default(false)
+  hoursFlagReason String?
+  pausedForTaskId String?
+  reworkOfTaskId  String?
+  reworkCount     Int          @default(0)
+  releaseReason   String?
+  createdAt       DateTime     @default(now())
+
+  assignee    User?       @relation("assignee", fields: [assigneeId], references: [id])
+  taskType    TaskType    @relation(fields: [taskTypeId], references: [id])
+  specVersion SpecVersion @relation(fields: [specVersionId], references: [id])
+  account     Account?    @relation(fields: [accountId], references: [id])
+
+  pausedFor Task?  @relation("pausedFor", fields: [pausedForTaskId], references: [id])
+  paused    Task[] @relation("pausedFor")
+  reworkOf  Task?  @relation("reworkOf", fields: [reworkOfTaskId], references: [id])
+  reworks   Task[] @relation("reworkOf")
+
+  proofs  Proof[]
+  reviews Review[]
+  events  TaskEvent[]
+  offers  TaskOffer[]
+  holds   AccountHold[]
+  tickets Ticket[]
+
+  @@index([state, dueAt])
+  @@index([assigneeId, state])
+}
+
+model TaskOffer {
+  id          String    @id @default(cuid())
+  taskId      String
+  taskerId    String
+  offeredAt   DateTime  @default(now())
+  respondedAt DateTime?
+  outcome     String? // accepted | declined | lost | expired
+
+  task   Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tasker User @relation(fields: [taskerId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, taskerId])
+}
+
+model Proof {
+  id             String   @id @default(cuid())
+  taskId         String
+  checklistKey   String
+  storageKey     String
+  sha256         String
+  phash          String
+  byteSize       Int
+  mimeType       String   @default("image/png")
+  receivedAt     DateTime @default(now())
+  telegramFileId String?
+  duplicateOfId  String?
+
+  task        Task    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  duplicateOf Proof?  @relation("duplicate", fields: [duplicateOfId], references: [id])
+  duplicates  Proof[] @relation("duplicate")
+
+  @@unique([taskId, checklistKey])
+  @@index([phash])
+}
+
+model Review {
+  id           String        @id @default(cuid())
+  taskId       String
+  stage        ReviewStage
+  outcome      ReviewOutcome
+  actorId      String
+  onBehalfOfId String?
+  channel      Channel
+  note         String?
+  citedProofId String?
+  reason       String?
+  decidedAt    DateTime      @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, decidedAt])
+}
+
+// Section 7 invariant 6 - every transition writes actor, authority and channel.
+// Automated transitions record the system as actor (actorId null).
+model TaskEvent {
+  id           String     @id @default(cuid())
+  taskId       String
+  fromState    TaskState?
+  toState      TaskState
+  actorId      String?
+  onBehalfOfId String?
+  channel      Channel
+  reason       String?
+  at           DateTime   @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, at])
+}
+
+model WorkRequest {
+  id          String    @id @default(cuid())
+  taskerId    String
+  requestedAt DateTime  @default(now())
+  resolvedAt  DateTime?
+
+  tasker User @relation(fields: [taskerId], references: [id], onDelete: Cascade)
+
+  @@index([taskerId, resolvedAt])
+}
+
+model TaskerStats {
+  taskerId            String   @id
+  approvalRate        Float    @default(0)
+  closedCount         Int      @default(0)
+  medianSubmitMinutes Int      @default(0)
+  reworkRate          Float    @default(0)
+  score               Float    @default(0)
+  windowDays          Int      @default(60)
+  computedAt          DateTime @default(now())
+
+  tasker User @relation(fields: [taskerId], references: [id], onDelete: Cascade)
+}
+
+// Section 10 - recorded only when a human decides the tasker broke platform rules.
+model Incident {
+  id         String            @id @default(cuid())
+  taskerId   String
+  taskId     String?
+  accountId  String?
+  cause      AccountIssueCause
+  note       String?
+  actorId    String
+  recordedAt DateTime          @default(now())
+
+  tasker User @relation(fields: [taskerId], references: [id], onDelete: Cascade)
+}
+
+// Section 15 - bind by numeric Telegram user id, via a short-lived nonce minted on web.
+model TelegramLinkNonce {
+  id        String    @id @default(cuid())
+  nonce     String    @unique
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Section 8 - productivity weights are configuration, not code.
+// Section 24 - acceptance window, idle threshold and grace window are config too.
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+
+// A tasker raises a ticket when something blocks them - usually the account
+// they were given. It carries enough context that an admin can act without a
+// conversation: which task, which account, and who to call back.
+//
+// Credentials are deliberately NOT stored here. The ticket carries the account
+// reference, and revealing from it goes through the vault like any other
+// reveal, so it still writes a CredentialReveal row naming who looked.
+model Ticket {
+  id       String         @id @default(cuid())
+  code     String         @unique // TKT-118
+  taskerId String
+  taskId   String?
+  accountId String?
+  category TicketCategory
+  priority TicketPriority @default(NORMAL)
+  subject  String
+  body     String
+  status   TicketStatus   @default(OPEN)
+
+  claimedById String?
+  claimedAt   DateTime?
+  resolvedAt  DateTime?
+  resolution  String?
+
+  // Alerting state. An open ticket keeps nudging until somebody claims it.
+  lastAlertedAt DateTime?
+  alertCount    Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tasker    User            @relation("raisedBy", fields: [taskerId], references: [id], onDelete: Cascade)
+  claimedBy User?           @relation("claimedBy", fields: [claimedById], references: [id])
+  task      Task?           @relation(fields: [taskId], references: [id])
+  account   Account?        @relation(fields: [accountId], references: [id])
+  messages  TicketMessage[]
+
+  @@index([status, createdAt])
+  @@index([taskerId, createdAt])
+}
+
+model TicketMessage {
+  id        String   @id @default(cuid())
+  ticketId  String
+  authorId  String
+  body      String
+  createdAt DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+}
+
+// A browser or phone that has agreed to receive push notifications. Only admins
+// and sub-admins register one: it is how an urgent ticket reaches them when the
+// console is closed and Telegram is not to hand.
+model PushSubscription {
+  id            String    @id @default(cuid())
+  userId        String
+  endpoint      String    @unique
+  p256dh        String
+  auth          String
+  userAgent     String?
+  createdAt     DateTime  @default(now())
+  lastSuccessAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}

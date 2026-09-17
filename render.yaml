@@ -1,0 +1,137 @@
+# Tasker on Render.
+#
+#   tasker-api    API + Telegram bot, one container. Paid: it must never sleep,
+#                 or ticket reminders, push alerts and the bot all stop.
+#   tasker-web    Tasker app and console. Free, kept awake by
+#                 .github/workflows/keep-alive.yml.
+#   tasker-db     Postgres. Paid: Render deletes free databases after 30 days.
+#   tasker-redis  Alerts and bot menus. Free: losing it on a restart is harmless.
+#
+# Everything sits in one region so the web app reaches the API over Render's
+# private network. Frankfurt is the closest region to West Africa.
+#
+# Settings marked `sync: false` are asked for when the Blueprint is created.
+# Plans can be changed later in the dashboard.
+
+databases:
+  - name: tasker-db
+    region: frankfurt
+    plan: 0.1c-256mb
+    postgresMajorVersion: "16"
+    databaseName: tasker
+    user: tasker
+    ipAllowList: []
+
+services:
+  - type: keyvalue
+    name: tasker-redis
+    region: frankfurt
+    plan: free
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+  - type: web
+    name: tasker-api
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    dockerfilePath: ./infrastructure/render/api.Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    buildFilter:
+      paths:
+        - apps/api/**
+        - apps/bot/**
+        - infrastructure/render/**
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tasker-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: tasker-redis
+          property: connectionString
+
+      # Generated once by Render. VAULT_KEY_SECRET encrypts every stored account
+      # password: copy it somewhere safe, and never change or delete it.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: VAULT_KEY_SECRET
+        generateValue: true
+      - key: INTERNAL_API_SECRET
+        generateValue: true
+
+      # The web app's public address, e.g. https://tasker-web.onrender.com
+      - key: WEB_ORIGIN
+        sync: false
+
+      # The first admin, created on first start while no admin exists. They
+      # choose their own password on first sign-in.
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_NAME
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+
+      # Telegram: the token from @BotFather, and the bot's username without @.
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_USERNAME
+        sync: false
+
+      # Cloudflare R2. Without these, video and screenshot uploads are refused.
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_PUBLIC_URL
+        sync: false
+      # Optional: a separate PRIVATE bucket for proof screenshots.
+      - key: R2_PROOF_BUCKET
+        sync: false
+
+      # Push notifications. Generate with: npx web-push generate-vapid-keys
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:admin@tasker.dev
+
+  - type: web
+    name: tasker-web
+    runtime: node
+    region: frankfurt
+    plan: free
+    buildCommand: >-
+      npx --yes pnpm@9.15.9 install --frozen-lockfile --filter @tasker/web... &&
+      npx --yes pnpm@9.15.9 --filter @tasker/web build
+    startCommand: cd apps/web && node_modules/.bin/next start -p $PORT
+    buildFilter:
+      paths:
+        - apps/web/**
+        - package.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # The API's private address. Read at build time, so after changing the
+      # API service, redeploy this one too.
+      - key: API_BASE
+        fromService:
+          type: web
+          name: tasker-api
+          property: hostport

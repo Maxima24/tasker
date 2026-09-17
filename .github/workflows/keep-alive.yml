@@ -1,0 +1,43 @@
+name: Keep Render awake
+
+# Render puts a free web service to sleep after 15 minutes without traffic, and
+# waking it takes about a minute - long enough for a tasker to think the app is
+# broken. This pings every 10 minutes to keep it awake, and fails when a
+# service or its database is unhealthy, so GitHub emails the repository owner.
+#
+# Set the URLs under Settings > Secrets and variables > Actions > Variables:
+#   TASKER_WEB_URL, TASKER_API_URL, and TASKER_BOT_URL if the bot has one.
+#
+# Two limits worth knowing:
+#   - GitHub can start scheduled runs late, or skip them at busy times, so a
+#     service may still occasionally sleep.
+#   - Every run counts against GitHub Actions minutes on a private repository.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Ping services
+        env:
+          TASKER_WEB_URL: ${{ vars.TASKER_WEB_URL }}
+          TASKER_API_URL: ${{ vars.TASKER_API_URL }}
+          TASKER_BOT_URL: ${{ vars.TASKER_BOT_URL }}
+        run: bash .github/scripts/keep-alive.sh

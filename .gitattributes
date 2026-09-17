@@ -1,0 +1,3 @@
+# Stored with LF so scripts and configs run unchanged on Render's Linux builders.
+* text=auto eol=lf
+*.png binary
